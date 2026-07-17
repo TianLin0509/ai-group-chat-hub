@@ -1,17 +1,19 @@
 'use strict';
 
+const { findUnavailableKinds } = require('../../core/provider-readiness.js');
+
 function createMeetingSubAdder(deps) {
   const {
     fs,
     getHookPort,
     getHubDataDir,
     getMeetingWorkspaceDir,
+    getProviderReadiness,
     getSlotPromptName,
     groupchat,
     hookToken,
     isClaudeFamily,
     isCodexBaseKind,
-    isIsolatedHub,
     kindLabels,
     logger = console,
     meetingManager,
@@ -58,14 +60,10 @@ function createMeetingSubAdder(deps) {
     }
 
     if (!sessionOpts.cwd) {
-      let workspaceDir = null;
-      if (isIsolatedHub()) {
-        workspaceDir = getMeetingWorkspaceDir(meetingId);
-      } else if (meeting) {
-        // 群聊 cwd 统一到主工作台，让 AI 原生 auto-memory 写到主项目目录
-        // 下次群聊启动时联邦索引脚本能自动捞起新记忆，形成闭环
-        workspaceDir = process.env.USERPROFILE || process.env.HOME || '.';
-      }
+      // Group members run in a narrow Hub-owned directory. The old public
+      // default used the user's entire home directory, which granted a safe
+      // session a much broader workspace than the meeting actually needs.
+      const workspaceDir = meeting ? getMeetingWorkspaceDir(meetingId) : null;
       if (workspaceDir) {
         try {
           fs.mkdirSync(workspaceDir, { recursive: true });
@@ -95,16 +93,34 @@ function createMeetingSubAdder(deps) {
 function registerMeetingCreateIpc(ipcMain, deps) {
   const {
     getHubDataDir,
+    getProviderReadiness,
     groupchat,
+    kindLabels,
     logger = console,
     meetingManager,
     sendToRenderer,
+    slotIds,
   } = deps;
   const addMeetingSubInternal = createMeetingSubAdder(deps);
 
   ipcMain.handle('create-meeting', async (_e, opts) => {
     const safe = { ...(opts || {}) };
     safe.groupChat = true;
+    if (!Array.isArray(safe.slots) || safe.slots.length === 0) {
+      throw new Error('请至少选择 1 位 AI 成员。');
+    }
+    if (safe.slots.length > slotIds.length) {
+      throw new Error(`当前编排器最多支持 ${slotIds.length} 位成员，请先移除多余成员。`);
+    }
+    if (typeof getProviderReadiness !== 'function') {
+      throw new Error('AI 就绪状态检测器不可用，请重启应用后再试。');
+    }
+    const readiness = await getProviderReadiness();
+    const unavailableKinds = findUnavailableKinds(safe.slots, readiness);
+    if (unavailableKinds.length > 0) {
+      const labels = unavailableKinds.map(kind => kindLabels[kind] || kind).join(' / ');
+      throw new Error(`${labels} 尚未就绪。请先安装并登录对应 CLI，或为 DeepSeek 配置 API Key。`);
+    }
     const hasCustomTitle = typeof safe.title === 'string' && safe.title.trim().length > 0;
     safe.autoTitlePending = !hasCustomTitle;
     safe.userRenamed = hasCustomTitle;

@@ -50,9 +50,9 @@
     document.head.appendChild(s);
   }
 
-  function _row(label, ready, hint) {
+  function _row(label, ready, hint, readyLabel = '已检测') {
     const badge = ready
-      ? '<span class="ob-badge ok">✅ 已就绪</span>'
+      ? `<span class="ob-badge ok">✅ ${readyLabel}</span>`
       : '<span class="ob-badge no">⬜ 未检测到</span>';
     const h = ready ? '' : `<span class="ob-hint">${hint}</span>`;
     return `<div class="ob-row">${badge}<span class="ob-name">${label}</span>${h}</div>`;
@@ -67,10 +67,10 @@
   async function _render() {
     _ensureStyle();
     let clis = { claude: false, codex: false, gemini: false, python: false };
-    let deepseekKey = false;
+    let readiness = { claude: false, codex: false, gemini: false, deepseek: false };
     try { clis = await ipcRenderer.invoke('detect-clis'); } catch {}
-    try { const cfg = await ipcRenderer.invoke('get-hub-config-raw'); deepseekKey = !!(cfg && cfg.deepseekApiKey); } catch {}
-    const anyReady = clis.claude || clis.codex || clis.gemini || deepseekKey;
+    try { readiness = await ipcRenderer.invoke('get-ai-readiness'); } catch {}
+    const anyReady = Object.values(readiness).some(Boolean);
 
     const old = document.getElementById('onboarding-overlay');
     if (old) old.remove();
@@ -80,12 +80,12 @@
     overlay.innerHTML = `
       <div class="ob-card" role="dialog" aria-label="欢迎">
         <div class="ob-h1">👋 欢迎使用 AI 群聊 Hub</div>
-        <div class="ob-sub">这是一个把多个 AI 命令行拉进同一个群聊的本地工作台——让 Claude / Codex / Gemini / DeepSeek 在一个房间里<b>串行接力</b>或并行讨论。它本身不含 AI，靠调用你本机<b>已安装并登录</b>的 AI CLI 工作。下面是当前检测结果：</div>
+        <div class="ob-sub">这是一个把多个 AI 命令行拉进同一个群聊的本地工作台——让 Claude / Codex / Gemini / DeepSeek 在一个房间里<b>串行接力</b>或并行讨论。它本身不含 AI。下面只检查命令和 Key 是否具备，<b>不等于已验证登录</b>；首次使用前仍建议在终端跑通对应 CLI。</div>
         <div class="ob-list">
-          ${_row(AI_INFO.claude.label, clis.claude, AI_INFO.claude.install)}
-          ${_row(AI_INFO.codex.label, clis.codex, AI_INFO.codex.install)}
-          ${_row(AI_INFO.gemini.label, clis.gemini, AI_INFO.gemini.install)}
-          ${_row(AI_INFO.deepseek.label, deepseekKey, AI_INFO.deepseek.install)}
+          ${_row(AI_INFO.claude.label, readiness.claude, AI_INFO.claude.install)}
+          ${_row(AI_INFO.codex.label, readiness.codex, AI_INFO.codex.install)}
+          ${_row(AI_INFO.gemini.label, readiness.gemini, AI_INFO.gemini.install)}
+          ${_row(AI_INFO.deepseek.label, readiness.deepseek, AI_INFO.deepseek.install, '启动条件已具备')}
         </div>
         ${!clis.python ? '<div class="ob-warn">⚠ 未检测到 <b>python</b>：群聊卡片的自动同步依赖它。建议安装 Python 3 并加入 PATH（不影响先用起来）。</div>' : ''}
         ${!anyReady ? '<div class="ob-warn">⚠ 还没有检测到任何可用的 AI。请先安装并登录上面任一 CLI，或在设置里填一个 DeepSeek API Key，再开始群聊。</div>' : ''}

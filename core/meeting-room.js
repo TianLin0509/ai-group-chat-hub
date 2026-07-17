@@ -1,4 +1,4 @@
-const { v4: uuid } = require('uuid');
+const { randomUUID } = require('crypto');
 const meetingStore = require('./meeting-store');
 
 // scene 白名单 (与 core/group-chat-scenes.js SCENE_REGISTRY keys 同步)
@@ -24,7 +24,7 @@ class MeetingRoomManager {
   }
 
   createMeeting(opts = {}) {
-    const id = uuid();
+    const id = randomUUID();
     const mode = MODE_TITLE_PREFIX[opts.mode] ? opts.mode : 'general';
     const titlePrefix = 'AI 群聊';
     const seq = ++this._counters[mode];

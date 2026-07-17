@@ -7,7 +7,7 @@
     powershell -ExecutionPolicy Bypass -File install.ps1
 
   What it does:
-    1) Check Node.js (needs 18+)
+    1) Check Node.js (needs 20+)
     2) npm install (downloads the Electron runtime)
     3) Create a desktop shortcut
   After it finishes, double-click the desktop shortcut to launch.
@@ -28,14 +28,14 @@ Write-Host ""
 $nodeV = $null
 try { $nodeV = (& node -v) 2>$null } catch {}
 if (-not $nodeV) {
-  Write-Host "[X] Node.js not found. Please install Node.js 18+ first:" -ForegroundColor Red
+  Write-Host "[X] Node.js not found. Please install Node.js 20+ first:" -ForegroundColor Red
   Write-Host "    https://nodejs.org/  (download the LTS build, then reopen the terminal)" -ForegroundColor Red
   exit 1
 }
 $major = 0
 try { $major = [int]($nodeV.TrimStart('v').Split('.')[0]) } catch {}
-if ($major -lt 18) {
-  Write-Host "[X] Node.js too old (found $nodeV), needs 18+. Please upgrade and retry." -ForegroundColor Red
+if ($major -lt 20) {
+  Write-Host "[X] Node.js too old (found $nodeV), needs 20+. Please upgrade and retry." -ForegroundColor Red
   exit 1
 }
 Write-Host "[OK] Node.js $nodeV" -ForegroundColor Green

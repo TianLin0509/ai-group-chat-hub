@@ -2,26 +2,33 @@ const pty = require('node-pty');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { v4: uuid } = require('uuid');
+const { randomUUID } = require('crypto');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
 const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
-const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
+const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND, modelFlag } = require('./model-options.js');
+const {
+  normalizeExecutionMode,
+  buildClaudePermissionArg,
+  buildCodexPermissionArgs,
+  buildGeminiPermissionArgs,
+  codexConfigPolicy,
+} = require('./agent-launch-policy.js');
 const { isSyntheticUserEntry, textFromContent } = require('./synthetic-user-filter.js');
 
 const RING_BUFFER_BYTES = 16384;
-const CODEX_REASONING_EFFORT = 'max';
-function buildCodexReasoningConfigArg(effort = CODEX_REASONING_EFFORT) {
-  return [
-    ` -c 'model_reasoning_effort="${effort}"'`,
-    ` -c 'approval_policy="never"'`,
-    ` -c 'sandbox_mode="danger-full-access"'`,
-    ` -c 'windows.sandbox="unelevated"'`,
-    ` -c 'notice.hide_full_access_warning=true'`,
-  ].join('');
+function buildCodexReasoningConfigArg() {
+  const effort = String(process.env.CLAUDE_HUB_CODEX_REASONING_EFFORT || '').trim();
+  return /^(minimal|low|medium|high|xhigh|max)$/i.test(effort)
+    ? ` -c 'model_reasoning_effort="${effort}"'`
+    : '';
 }
-const CODEX_REASONING_CONFIG_ARG = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
+
+function buildClaudeEffortArg() {
+  const effort = String(process.env.CLAUDE_HUB_CLAUDE_EFFORT || '').trim();
+  return /^(low|medium|high|xhigh|max)$/i.test(effort) ? ` --effort ${effort}` : '';
+}
 
 // 打包后 __dirname 指向 app.asar 内部，外部进程（claude/codex CLI）读不到。
 // 用 asarUnpack 解压副本 + 路径替换，源码模式 __dirname 不含 app.asar，noop。
@@ -48,6 +55,7 @@ function _loadConfigValues() {
     CODEX_API_BASE_URL: config.codexApiBaseUrl,
     CODEX_API_MODEL: config.codexApiModel,
     CODEX_API_PROVIDER: config.codexApiProvider || 'custom',
+    AGENT_EXECUTION_MODE: normalizeExecutionMode(config.agentExecutionMode),
   };
 }
 // 惰性求值：首次使用时加载，之后缓存
@@ -81,7 +89,7 @@ function isClaudeApiBackend(cv) {
 }
 
 function shouldUseClaudeFastSettings(cv) {
-  return process.env.CLAUDE_HUB_NO_FAST !== '1' && !isClaudeApiBackend(cv || getConfigValues());
+  return process.env.CLAUDE_HUB_FAST === '1' && !isClaudeApiBackend(cv || getConfigValues());
 }
 
 function applyClaudeSessionEnv(sessionEnv, cv) {
@@ -124,7 +132,7 @@ function toClaudeProjectKey(projectDir) {
   return path.resolve(projectDir || os.homedir()).replace(/\\/g, '/');
 }
 
-function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
+function ensureClaudeConfigReady(claudeDir, projectDir, executionMode) {
   if (!claudeDir) return;
   try {
     fs.mkdirSync(claudeDir, { recursive: true });
@@ -132,8 +140,11 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
     const settingsPath = path.join(claudeDir, 'settings.json');
     let settings = {};
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
-    if (settings.permissionMode !== 'bypassPermissions') {
-      settings.permissionMode = 'bypassPermissions';
+    const permissionMode = normalizeExecutionMode(executionMode) === 'dangerous'
+      ? 'bypassPermissions'
+      : 'acceptEdits';
+    if (settings.permissionMode !== permissionMode) {
+      settings.permissionMode = permissionMode;
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
     }
 
@@ -145,12 +156,15 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
       state.projects = {};
     }
 
-    // 顶级 state：跳过 BypassPermissions 全屏警告菜单 + onboarding。
-    // 缺这些字段时 claude CLI 首次启动会弹 "WARNING: Bypass Permissions mode" 全屏菜单
-    // 要求按 2+Enter 通过 — conpty alt-screen 下方向键模拟不靠谱，普通用户体感"卡住"。
-    // 字段名参考主 ~/.claude.json（生产 Claude 长期 accept 后的实际状态）。
-    state.bypassPermissionsModeAccepted = true;
-    state.skipDangerousModePermissionPrompt = true;
+    // Only pre-accept the dangerous-mode warning after the user explicitly
+    // opted into dangerous execution. Safe mode never seeds bypass consent.
+    if (normalizeExecutionMode(executionMode) === 'dangerous') {
+      state.bypassPermissionsModeAccepted = true;
+      state.skipDangerousModePermissionPrompt = true;
+    } else {
+      delete state.bypassPermissionsModeAccepted;
+      delete state.skipDangerousModePermissionPrompt;
+    }
     state.hasCompletedOnboarding = true;
 
     const projectKey = toClaudeProjectKey(projectDir);
@@ -169,7 +183,7 @@ function ensureClaudeBypassAndTrust(claudeDir, projectDir) {
     };
     fs.writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf8');
   } catch (err) {
-    console.warn('[hub] failed to pretrust Claude config:', err.message);
+    console.warn('[hub] failed to prepare Claude config:', err.message);
   }
 }
 
@@ -397,7 +411,8 @@ function ensureCodexApiProfile(cv, projectDir) {
   const codexHome = getCodexApiHome();
   const provider = cv.CODEX_API_PROVIDER || 'custom';
   const baseUrl = cv.CODEX_API_BASE_URL || '';
-  const model = cv.CODEX_API_MODEL || DEFAULT_MODEL_BY_KIND.codex;
+  const model = cv.CODEX_API_MODEL || 'gpt-5.6';
+  const policy = codexConfigPolicy(cv.AGENT_EXECUTION_MODE);
   const projectKey = path.resolve(projectDir || os.homedir());
 
   fs.mkdirSync(codexHome, { recursive: true });
@@ -405,16 +420,12 @@ function ensureCodexApiProfile(cv, projectDir) {
     'disable_response_storage = true',
     `model = ${tomlString(model)}`,
     `model_provider = ${tomlString(provider)}`,
-    `model_reasoning_effort = ${tomlString(CODEX_REASONING_EFFORT)}`,
-    'approval_policy = "never"',
-    'sandbox_mode = "danger-full-access"',
+    `approval_policy = ${tomlString(policy.approvalPolicy)}`,
+    `sandbox_mode = ${tomlString(policy.sandboxMode)}`,
     '',
     '[notice]',
     'hide_rate_limit_model_nudge = true',
-    'hide_full_access_warning = true',
-    '',
-    '[windows]',
-    'sandbox = "unelevated"',
+    `hide_full_access_warning = ${policy.sandboxMode === 'danger-full-access' ? 'true' : 'false'}`,
     '',
     `[model_providers.${provider}]`,
     `base_url = ${tomlString(baseUrl)}`,
@@ -586,7 +597,7 @@ class SessionManager extends EventEmitter {
   //   geminiChatId:       Gemini 8charId from chats/session-*.json (T8 new, used for index lookup)
   //   geminiProjectRoot:  required for Gemini resume (T8 new, used as cwd for correct project scoping)
   createSession(kind = 'powershell', opts = {}) {
-    const id = opts.id || uuid();
+    const id = opts.id || randomUUID();
     const isClaude = kind === 'claude' || kind === 'claude-resume';
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isCodex = isCodexCliKind(kind);
@@ -697,8 +708,8 @@ class SessionManager extends EventEmitter {
         // 记到 info 让 transcript-tap 注册时把这个 root 加进 CodexTap 的扫描列表。
         codexSessionsRoot = path.join(sessionEnv.CODEX_HOME, 'sessions');
       } else if (opts.meetingId) {
-        // 群聊 Codex 用默认 ~/.codex/（跟 env 准备阶段一致，让 Codex 自动
-        // 写到主 memory，跟 Hub 直开 Codex 共享 1.9MB 历史）
+        // Only Hub-owned group workspaces are pre-trusted. Normal sessions keep
+        // Codex's own trust prompt instead of silently trusting an arbitrary cwd.
         delete sessionEnv.CODEX_HOME;
         ensureCodexCwdTrusted(spawnCwd);
         // codexSessionsRoot 保持 null，让 CodexTap 扫默认 ~/.codex/sessions
@@ -706,18 +717,16 @@ class SessionManager extends EventEmitter {
         codexProfile = codexProfile || resolveCodexSubscriptionProfile(cv, opts.codexProfile);
         if (codexProfile.home) {
           sessionEnv.CODEX_HOME = codexProfile.home;
-          ensureCodexCwdTrusted(spawnCwd, codexProfile.home);
           // 非默认订阅账号也有独立 rollout root，否则 CodexTap 只扫 ~/.codex/sessions。
           codexSessionsRoot = path.join(codexProfile.home, 'sessions');
         } else {
           delete sessionEnv.CODEX_HOME;
-          ensureCodexCwdTrusted(spawnCwd);
         }
       }
     }
 
     if (isDeepSeek) {
-      ensureClaudeBypassAndTrust(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd);
+      ensureClaudeConfigReady(sessionEnv.CLAUDE_CONFIG_DIR, spawnCwd, getConfigValues().AGENT_EXECUTION_MODE);
     }
 
     const ptyProcess = pty.spawn('powershell.exe', shellArgs, {
@@ -740,7 +749,7 @@ class SessionManager extends EventEmitter {
     // 故不像 DeepSeek/Codex 那样预写 trust；改为检测「trust this folder」信任对话框自动发
     // Enter 确认（默认高亮项=Yes proceed，一次性、race-free）。避免新 meeting workspace 卡
     // trust dialog 致 cli 永不 ready（群聊里该 Claude 全程 no_sent，如投委会主席）。
-    if (isClaude) {
+    if (isClaude && opts.meetingId) {
       let _trustDone = false;
       let _trustBuf = '';
       const _trustSub = ptyProcess.onData((d) => {
@@ -760,20 +769,18 @@ class SessionManager extends EventEmitter {
 
     let currentModel = null;
     if (isClaude) {
-      // 默认走 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 4.8 1M）；
-      // AI 群聊 Modal 选 sonnet-4.5 等时透传 opts.model。
       const mid = opts.model || DEFAULT_MODEL_BY_KIND.claude;
-      currentModel = { id: mid, displayName: mid };
+      currentModel = mid ? { id: mid, displayName: mid } : null;
     } else if (isGemini) {
-      const mid = opts.model || 'gemini-3-pro-preview';
-      currentModel = { id: mid, displayName: SessionManager.geminiDisplayName(mid) };
+      const mid = opts.model || DEFAULT_MODEL_BY_KIND.gemini;
+      currentModel = mid ? { id: mid, displayName: SessionManager.geminiDisplayName(mid) } : null;
     } else if (isCodex) {
       const cv = getConfigValues();
       // opts.model（modal/picker 用户选择）必须最高优先级；只有未传时才落到 backend 默认 / DEFAULT_MODEL_BY_KIND.codex。
       // 旧写法 `isCodexApiBackend ? cv.CODEX_API_MODEL : (opts.model || ...)` 在 packy api 模式下
       // 强制覆盖用户选择，AI 群聊选 5.4/5.3 实际跑出来都是 5.5。
       const cmid = opts.model || resolveDefaultCodexModel(cv);
-      currentModel = { id: cmid, displayName: cmid.toUpperCase() };
+      currentModel = cmid ? { id: cmid, displayName: cmid.toUpperCase() } : null;
     } else if (isDeepSeek) {
       const mid = normalizeDeepSeekModel(opts.model);
       currentModel = { id: mid, displayName: deepseekDisplayName(mid) };
@@ -844,36 +851,24 @@ class SessionManager extends EventEmitter {
     }
 
     if (isClaude) {
-      // 所有路径（fresh / resume / continue）都显式传 --model，
-      // 防止 user-level ~/.claude/settings.local.json 的 model 字段（被 /model 命令污染）
-      // 影响 resume 出来的 session。Claude CLI 的 --resume 仅恢复 transcript 对话历史，
-      // 不从 transcript 反推 model 设置；下一条消息的 model 解析顺序为
-      // CLI --model > env > settings 文件，所以必须显式覆盖。
-      // opts.model 让 meeting-create-modal 选定的非默认 model（如 sonnet-4.5）生效。
-      const model = opts.model || DEFAULT_MODEL_BY_KIND.claude;
-      // 默认 --effort max：用户偏好"立花道雪工作台"所有 Claude 会话上 max effort。
-      // settings.json 持久档为 effortLevel: max（CLI --effort 合法枚举：low/medium/high/xhigh/max；
-      // ultracode 不是合法 --effort 枚举值，旧注释把它当 enum 是错的）。
-      // 这里 --effort max 与 settings.effortLevel=max 同值，作为"防御性显式指定"——
-      //   防止 settings.local.json 或 /effort 命令污染把会话降到低档。
-      // ultracode 是独立的 per-turn 关键词触发器（在 prompt 里输入 "ultracode" 字面词
-      //   即可本回合 opt-in workflow tool + xhigh effort），由 settings.json 的
-      //   `workflowKeywordTriggerEnabled` 控制（默认 on，无需显式写）。注意：UI/遥测
-      //   名为 ultracodeKeywordTrigger，但 on-disk key 实际是 workflowKeywordTriggerEnabled。
-      //   --effort max 不会阻塞该触发器，因为触发器是会话内独立 toggle，与启动 flag 解耦。
-      // CLAUDE_HUB_NO_EFFORT_MAX=1 可关启动期注入。
-      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ' --effort max';
+      // Public builds follow the user's CLI model and effort defaults unless a
+      // model was explicitly selected in the Hub. Elevated effort is opt-in via
+      // CLAUDE_HUB_CLAUDE_EFFORT, never silently forced.
+      const modelArg = modelFlag(opts.model || DEFAULT_MODEL_BY_KIND.claude);
+      const effortFlag = buildClaudeEffortArg();
+      const cv = getConfigValues();
+      const permissionArg = buildClaudePermissionArg(cv.AGENT_EXECUTION_MODE);
       let cmd;
       if (opts.forkCCSessionId) {
-        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session --model ${model}${effortFlag}`;
+        cmd = ` claude --resume ${opts.forkCCSessionId} --fork-session${modelArg} ${permissionArg}${effortFlag}`;
       } else if (opts.resumeCCSessionId) {
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model}${effortFlag}`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId}${modelArg} ${permissionArg}${effortFlag}`;
       } else if (opts.useContinue) {
-        cmd = ` claude --continue --model ${model}${effortFlag}`;
+        cmd = ` claude --continue${modelArg} ${permissionArg}${effortFlag}`;
       } else if (kind === 'claude-resume') {
-        cmd = ` claude --resume --model ${model}${effortFlag}`;
+        cmd = ` claude --resume${modelArg} ${permissionArg}${effortFlag}`;
       } else {
-        cmd = ` claude --model ${model}${effortFlag}`;
+        cmd = ` claude${modelArg} ${permissionArg}${effortFlag}`;
       }
       // Append system prompt file if provided (TeamSessionManager injects character prompt)
       if (opts.appendSystemPromptFile) {
@@ -890,8 +885,7 @@ class SessionManager extends EventEmitter {
       // 用 settings 文件而非 inline JSON，规避 PS 5.1 向 native exe 传内嵌双引号的 quoting bug。
       // 2026-06-11：实测 fastMode 交互式会话不落盘 transcript jsonl（/exit 后仍空），
       //   导致 transcript-tap 拿不到 turn 文本 → 卡片同步收不到回复。
-      //   CLAUDE_HUB_NO_FAST=1 可全局禁用 fast 注入。
-      const cv = getConfigValues();
+      //   Public builds keep this off; CLAUDE_HUB_FAST=1 explicitly opts in.
       if (shouldUseClaudeFastSettings(cv)) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         cmd += ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
@@ -922,8 +916,9 @@ class SessionManager extends EventEmitter {
     }
 
     if (isGemini) {
-      let cmd = ' gemini --approval-mode yolo';
-      cmd += ` --model ${opts.model || 'gemini-3-pro-preview'}`;
+      const cv = getConfigValues();
+      let cmd = ` gemini ${buildGeminiPermissionArgs(cv.AGENT_EXECUTION_MODE)}`;
+      cmd += modelFlag(opts.model || DEFAULT_MODEL_BY_KIND.gemini);
       if (kind === 'gemini-resume') {
         cmd += ' --resume latest';
       } else if (opts.useResume) {
@@ -966,30 +961,24 @@ class SessionManager extends EventEmitter {
       dismissCodexRateLimitDialog(undefined, sessionEnv.CODEX_HOME || null);
       const cv = getConfigValues();
       const codexModel = opts.model || resolveDefaultCodexModel(cv);
-      const codexReasoningArg = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
+      const codexModelArg = modelFlag(codexModel);
+      const codexPermissionArgs = buildCodexPermissionArgs(cv.AGENT_EXECUTION_MODE);
+      const codexReasoningArg = buildCodexReasoningConfigArg();
       const codexInstructionFile = opts.codexInstructionFile || null;
       let cmd;
       if (opts.codexForkSid) {
-        cmd = ` codex fork ${opts.codexForkSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
+        cmd = ` codex fork ${opts.codexForkSid} ${codexPermissionArgs}${codexModelArg}${codexReasoningArg}`;
       } else if (kind === 'codex-resume' || opts.codexResumePicker) {
         // codex resume 无参 = picker by default
-        cmd = ` codex resume --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
+        cmd = ` codex resume ${codexPermissionArgs}${codexModelArg}${codexReasoningArg}`;
       } else if (opts.useResume && opts.codexSid) {
         // Level 1: precise resume by sid
-        cmd = ` codex resume ${opts.codexSid} --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
+        cmd = ` codex resume ${opts.codexSid} ${codexPermissionArgs}${codexModelArg}${codexReasoningArg}`;
       } else if (opts.useResume) {
         // Level 2 degradation: no sid recorded → use --last
-        cmd = ` codex resume --last --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
+        cmd = ` codex resume --last ${codexPermissionArgs}${codexModelArg}${codexReasoningArg}`;
       } else {
-        // Research mode：完全 bypass approvals + sandbox（含 MCP 工具调用、shell 命令、文件写）
-        // 避免任何 "Allow ... ?" 弹窗阻塞投研讨论流程；
-        // 安全约束完全靠 prompt/covenant 软约束（已强化"不要改代码 / 不要 git / 不要删除"）
-        // opts.model 让 meeting-create-modal 选定的非默认 model（如 gpt-5.4）生效。
-        if (opts.codexBypassApprovals) {
-          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
-        } else {
-          cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${codexModel}${codexReasoningArg}`;
-        }
+        cmd = ` codex ${codexPermissionArgs}${codexModelArg}${codexReasoningArg}`;
         // 注：曾尝试 --no-alt-screen 改善观感，实测无明显改善 + Enter 提交失效 → 撤回。
         // 渲染观感问题改由"持久化 AI 群聊面板"（直接展示干净回答预览）绕过。
       }
@@ -1023,20 +1012,19 @@ class SessionManager extends EventEmitter {
 
     if (isDeepSeek) {
       let cmd;
-      // --permission-mode bypassPermissions 跳过信任文件夹 + 工具权限等所有弹窗，
-      // 让 DeepSeek 会话和 Claude 会话一样直接启动（~/.claude-deepseek 是隔离配置，
-      // 不像 ~/.claude 有历史累积的信任状态，必须靠 CLI 参数兜底）。
+      const cv = getConfigValues();
+      const permissionArg = buildClaudePermissionArg(cv.AGENT_EXECUTION_MODE);
       if (kind === 'deepseek-resume') {
         const model = normalizeDeepSeekModel(opts.model);
-        cmd = ` claude --resume --model ${model} --permission-mode bypassPermissions`;
+        cmd = ` claude --resume${modelFlag(model)} ${permissionArg}`;
       } else if (opts.resumeCCSessionId) {
         const model = normalizeDeepSeekModel(opts.model);
-        cmd = ` claude --resume ${opts.resumeCCSessionId} --model ${model} --permission-mode bypassPermissions`;
+        cmd = ` claude --resume ${opts.resumeCCSessionId}${modelFlag(model)} ${permissionArg}`;
       } else if (opts.useContinue) {
         const model = normalizeDeepSeekModel(opts.model);
-        cmd = ` claude --continue --model ${model} --permission-mode bypassPermissions`;
+        cmd = ` claude --continue${modelFlag(model)} ${permissionArg}`;
       } else {
-        cmd = ` claude --model ${normalizeDeepSeekModel(opts.model)} --permission-mode bypassPermissions`;
+        cmd = ` claude${modelFlag(normalizeDeepSeekModel(opts.model))} ${permissionArg}`;
       }
       // 群聊投研场景 MCP server 注入（与 isClaude 分支同款；2026-05-28 补齐 DS/GLM/GPT/Kimi/Qwen 五家漏接）
       if (opts.mcpConfigFile) {
@@ -1174,32 +1162,28 @@ class SessionManager extends EventEmitter {
     const baseKind = (typeof kind === 'string') ? kind.replace(/-resume$/, '') : kind;
     const isClaudeCli = isClaudeFamily(baseKind);
     const isolation = isClaudeCli ? buildGroupChatIsolationFlags(meetingId) : '';
+    const cv = getConfigValues();
     let cmd;
     if (isCodexCliKind(kind)) {
       // relaunch：API 模式时 codex 用 isolated CODEX_HOME，从 info.codexSessionsRoot 反推
       const codexConfigDir = s.info && s.info.codexSessionsRoot ? path.dirname(s.info.codexSessionsRoot) : null;
       dismissCodexUpdatePrompt(undefined, codexConfigDir);
       dismissCodexRateLimitDialog(undefined, codexConfigDir);
-      const codexReasoningArg = buildCodexReasoningConfigArg(CODEX_REASONING_EFFORT);
-      cmd = ` codex --dangerously-bypass-approvals-and-sandbox --model ${modelId || DEFAULT_MODEL_BY_KIND.codex}${codexReasoningArg}`;
+      const codexReasoningArg = buildCodexReasoningConfigArg();
+      cmd = ` codex ${buildCodexPermissionArgs(cv.AGENT_EXECUTION_MODE)}${modelFlag(modelId || DEFAULT_MODEL_BY_KIND.codex)}${codexReasoningArg}`;
       cmd += '\r\n';
     } else if (kind === 'gemini' || kind === 'gemini-resume') {
-      cmd = ` gemini --approval-mode yolo --model ${modelId || 'gemini-3-pro-preview'}\r\n`;
+      cmd = ` gemini ${buildGeminiPermissionArgs(cv.AGENT_EXECUTION_MODE)}${modelFlag(modelId || DEFAULT_MODEL_BY_KIND.gemini)}\r\n`;
     } else if (kind === 'claude' || kind === 'claude-resume') {
-      // 默认 --effort max（CLAUDE_HUB_NO_EFFORT_MAX=1 可关）；
-      // 默认 model 跟随 DEFAULT_MODEL_BY_KIND.claude（当前 Opus 4.8 1M）。
-      // 默认叠 fast 模式 settings（CLAUDE_HUB_NO_FAST=1 可关）—— 与 createSession
-      //   spawn block 对齐，防止 relaunch 后丢 fast 状态。
-      const effortFlag = process.env.CLAUDE_HUB_NO_EFFORT_MAX === '1' ? '' : ' --effort max';
+      const effortFlag = buildClaudeEffortArg();
       let fastFlag = '';
-      const cv = getConfigValues();
       if (shouldUseClaudeFastSettings(cv)) {
         const fastSettingsPath = resolveAsarUnpacked('claude-subscription-fast-settings.json');
         fastFlag = ` --settings "${fastSettingsPath.replace(/\\/g, '\\\\')}"`;
       }
-      cmd = ` claude --model ${modelId || DEFAULT_MODEL_BY_KIND.claude}${effortFlag}${fastFlag}${isolation}\r\n`;
+      cmd = ` claude${modelFlag(modelId || DEFAULT_MODEL_BY_KIND.claude)} ${buildClaudePermissionArg(cv.AGENT_EXECUTION_MODE)}${effortFlag}${fastFlag}${isolation}\r\n`;
     } else if (kind === 'deepseek' || kind === 'deepseek-resume') {
-      cmd = ` claude --model ${normalizeDeepSeekModel(modelId)} --permission-mode bypassPermissions${isolation}\r\n`;
+      cmd = ` claude${modelFlag(normalizeDeepSeekModel(modelId))} ${buildClaudePermissionArg(cv.AGENT_EXECUTION_MODE)}${isolation}\r\n`;
     } else {
       return false;
     }

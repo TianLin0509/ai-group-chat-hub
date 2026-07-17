@@ -4,6 +4,7 @@ const { isClaudeFamily, isAiKind, isPasteSensitive, isCodexSessionKind: isCodexK
 const { formatAbsoluteTime } = require('./format-time.js');
 const { marked } = require('marked');
 const DOMPurify = require('dompurify');
+const HUB_APP_VERSION = require('../package.json').version;
 // ── Bug 修复（2026-06-21 道雪）：marked 默认透传裸 HTML，AI/用户消息正文里的字面
 //    <script>/<style>/未闭合 <tag>（含数学 a<b、泛型 List<String>）会被浏览器 HTML
 //    解析器当成元素、把后续内容当作其文本吞掉，再被 DOMPurify 整段删除 → 消息正文
@@ -58,6 +59,9 @@ function traceRendererStartup(msg) {
   if (!RENDER_STARTUP_TRACE) return;
   console.log(`[renderer-startup +${Math.round(performance.now() - RENDER_STARTUP_T0)}ms] ${msg}`);
 }
+
+const launcherVersionEl = document.querySelector('.launcher-version');
+if (launcherVersionEl) launcherVersionEl.textContent = `v${HUB_APP_VERSION}`;
 traceRendererStartup('renderer.js start');
 const { Terminal } = require('@xterm/xterm');
 

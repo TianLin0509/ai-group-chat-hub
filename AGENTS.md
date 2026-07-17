@@ -11,14 +11,14 @@
 ## 步骤 1 · 环境自检（先跑，据结果决定后续）
 
 ```powershell
-node -v                                   # 需要 v18+
+node -v                                   # 需要 v20+
 git --version                             # clone 用（下载 zip 则不需要）
 where.exe claude ; where.exe codex ; where.exe gemini   # 至少一个命中
 where.exe python                          # 可选（卡片自动同步用）
 ```
 
 判断规则：
-- `node -v` 低于 v18 或缺失 → **停下**，让用户先装 Node.js 18+（https://nodejs.org LTS），重开终端再继续。
+- `node -v` 低于 v20 或缺失 → **停下**，让用户先装 Node.js 20+（https://nodejs.org LTS），重开终端再继续。
 - 三个 AI CLI **全部**未命中 → 仍可安装，但要告知用户「至少装并登录一个 AI CLI 才能真正群聊」。
 - `python` 未命中 → 不阻塞，安装后提醒用户「装 Python 3 可让群聊卡片自动同步」。
 

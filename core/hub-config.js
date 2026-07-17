@@ -11,18 +11,20 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { getHubDataDir } = require('./data-dir');
-const { DEFAULT_MODEL_BY_KIND } = require('./model-options.js');
+const { normalizeExecutionMode } = require('./agent-launch-policy.js');
 
 // 默认值
 const DEFAULTS = {
   proxy: '',
+  agent_execution_mode: 'safe',
+  claude_hook_integration: false,
   claude_backend: 'subscription',
   claude_api_base_url: '',
-  claude_api_model: 'claude-opus-4-8[1m]',
+  claude_api_model: '',
   codex_backend: 'subscription',
   codex_subscription_profile: 'default',
   codex_api_base_url: '',
-  codex_api_model: DEFAULT_MODEL_BY_KIND.codex,
+  codex_api_model: 'gpt-5.6',
   codex_api_provider: '',
   ui_tool_fold_threshold: 15,
   ui_code_fold_threshold: 30,
@@ -68,6 +70,11 @@ function normalizeBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '');
 }
 
+function normalizeBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  return /^(1|true|yes|on)$/i.test(String(value || '').trim());
+}
+
 function defaultCodexSubscriptionProfiles() {
   return [
     { id: 'default', label: '主账号', home: '' },
@@ -103,6 +110,8 @@ function getConfig() {
 
   _cachedConfig = {
     proxy: getConfigValue('proxy', 'CLAUDE_PROXY', 'proxy.http', DEFAULTS.proxy),
+    agentExecutionMode: normalizeExecutionMode(getConfigValue('agentExecutionMode', 'HUB_AGENT_EXECUTION_MODE', 'execution.mode', DEFAULTS.agent_execution_mode)),
+    claudeHookIntegration: normalizeBoolean(getConfigValue('claudeHookIntegration', 'HUB_CLAUDE_HOOK_INTEGRATION', 'integrations.claude_hooks', DEFAULTS.claude_hook_integration)),
     claudeBackend: getConfigValue('claudeBackend', 'HUB_CLAUDE_BACKEND', 'providers.claude.backend', DEFAULTS.claude_backend),
     claudeApiKey: getConfigValue('claudeApiKey', 'HUB_CLAUDE_API_KEY', 'providers.claude.api_key', ''),
     claudeApiBaseUrl: normalizeBaseUrl(getConfigValue('claudeApiBaseUrl', 'HUB_CLAUDE_API_BASE_URL', 'providers.claude.base_url', DEFAULTS.claude_api_base_url)),
