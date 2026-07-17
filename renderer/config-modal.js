@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+const DEFAULT_CODEX_MODEL = 'gpt-5.6';
 
 function createConfigModalController({ document, ipcRenderer, providerModes, renderAccountUsage }) {
   if (!document) throw new Error('document is required');
@@ -115,7 +115,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
 
   function updateConfigSummaries() {
     const claudeBackend = configEl('cfg-claude-backend') ? configEl('cfg-claude-backend').value : 'subscription';
-    const claudeModel = configEl('cfg-claude-model') ? (configEl('cfg-claude-model').value.trim() || 'claude-opus-4-8[1m]') : 'claude-opus-4-8[1m]';
+    const claudeModel = configEl('cfg-claude-model') ? (configEl('cfg-claude-model').value.trim() || 'CLI 默认') : 'CLI 默认';
     const claudeKey = configEl('cfg-claude-key') ? configEl('cfg-claude-key').value.trim() : '';
     const codexBackend = configEl('cfg-codex-backend') ? configEl('cfg-codex-backend').value : 'subscription';
     const codexModel = configEl('cfg-codex-model') ? (configEl('cfg-codex-model').value.trim() || DEFAULT_CODEX_MODEL) : DEFAULT_CODEX_MODEL;
@@ -142,11 +142,11 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     );
   
     const deepseekSummary = configEl('cfg-summary-deepseek');
-    if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro[1m]' : 'API · 未配置 Key';
+    if (deepseekSummary) deepseekSummary.textContent = deepseekKey ? 'API · deepseek-v4-pro' : 'API · 未配置 Key';
     setConfigStatus(configEl('cfg-status-deepseek'), deepseekKey ? 'API' : '缺 Key', deepseekKey ? 'api' : 'missing');
 
     const claudeSummary = configEl('cfg-summary-claude');
-    if (claudeSummary) claudeSummary.textContent = '订阅模式 · claude-opus-4-8[1m]';
+    if (claudeSummary) claudeSummary.textContent = '订阅模式 · 跟随 CLI 默认';
     if (activeConfigAi === 'claude') {
       setConfigStatus(configEl('cfg-detail-status'), '订阅', 'subscription');
     }
@@ -154,7 +154,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     if (claudeSummary) {
       claudeSummary.textContent = claudeBackend === 'api'
         ? `API · ${claudeModel}`
-        : '订阅模式 · claude-opus-4-8[1m]';
+        : '订阅模式 · 跟随 CLI 默认';
     }
     if (activeConfigAi === 'claude') {
       setConfigStatus(
@@ -212,6 +212,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       providerModes.codex = cfg.codexBackend === 'api' ? 'api' : 'subscription';
       setCodexProfileForm(cfg.codexSubscriptionProfiles, cfg.codexSubscriptionProfile);
       document.getElementById('cfg-proxy').value = cfg.proxy || '';
+      document.getElementById('cfg-execution-mode').value = cfg.agentExecutionMode === 'dangerous' ? 'dangerous' : 'safe';
+      document.getElementById('cfg-claude-hook-integration').value = cfg.claudeHookIntegration ? 'on' : 'off';
       document.getElementById('cfg-claude-backend').value = cfg.claudeBackend || 'subscription';
       document.getElementById('cfg-claude-key').value = cfg.claudeApiKey || '';
       document.getElementById('cfg-claude-url').value = cfg.claudeApiBaseUrl || '';
@@ -248,7 +250,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
     document.querySelectorAll('.config-ai-row').forEach(row => {
       row.addEventListener('click', () => showConfigDetail(row.dataset.ai));
     });
-    ['cfg-claude-backend', 'cfg-claude-key', 'cfg-claude-url', 'cfg-claude-model', 'cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key'].forEach(id => {
+    ['cfg-execution-mode', 'cfg-claude-hook-integration', 'cfg-claude-backend', 'cfg-claude-key', 'cfg-claude-url', 'cfg-claude-model', 'cfg-codex-backend', 'cfg-codex-subscription-profile', 'cfg-codex-profile-default-label', 'cfg-codex-profile-second-label', 'cfg-codex-profile-second-home', 'cfg-codex-key', 'cfg-codex-url', 'cfg-codex-model', 'cfg-deepseek-key'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', updateConfigSummaries);
       if (el) el.addEventListener('change', updateConfigSummaries);
@@ -264,6 +266,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       const msg = document.getElementById('config-save-msg');
       const newConfig = {
         proxy: document.getElementById('cfg-proxy').value.trim() || undefined,
+        agentExecutionMode: document.getElementById('cfg-execution-mode').value === 'dangerous' ? 'dangerous' : 'safe',
+        claudeHookIntegration: document.getElementById('cfg-claude-hook-integration').value === 'on',
         claudeBackend: document.getElementById('cfg-claude-backend').value,
         claudeApiKey: document.getElementById('cfg-claude-key').value.trim() || undefined,
         claudeApiBaseUrl: document.getElementById('cfg-claude-url').value.trim() || undefined,
@@ -281,7 +285,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         if (result && result.success) {
           providerModes.codex = newConfig.codexBackend === 'api' ? 'api' : 'subscription';
           renderAccountUsage();
-          msg.textContent = '配置已保存。新创建的 Codex / DeepSeek 会话将立即生效。';
+          msg.textContent = '配置已保存。权限策略对新会话生效；Claude Hook 开关在重启 Hub 后生效。';
           msg.className = 'config-save-msg success';
           msg.style.display = 'block';
           setTimeout(() => { msg.style.display = 'none'; }, 4000);

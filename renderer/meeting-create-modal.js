@@ -4,10 +4,7 @@
 const { ipcRenderer } = require('electron');
 const { KIND_LABELS } = require('../core/ai-kinds.js');
 const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
-
-const MODELS_BY_KIND = Object.fromEntries(
-  Object.entries(MODEL_OPTIONS_BY_KIND).map(([kind, opts]) => [kind, opts.map(o => o.id)])
-);
+const { findUnavailableKinds } = require('../core/provider-readiness.js');
 
 const DEFAULT_SLOTS = [
   { kind: 'claude', model: DEFAULT_MODEL_BY_KIND.claude },
@@ -15,6 +12,7 @@ const DEFAULT_SLOTS = [
   { kind: 'deepseek', model: DEFAULT_MODEL_BY_KIND.deepseek },
 ];
 const DEFAULT_GROUP_MEMBERS = DEFAULT_SLOTS.map(x => ({ ...x }));
+const MAX_GROUP_MEMBERS = 3;
 const SLOT_NAMES = ['一号位', '二号位', '三号位'];
 
 let _modalEl = null;
@@ -25,6 +23,7 @@ let _escListener = null;
 // Refreshed on every modal open so the member dropdowns can flag AIs that are
 // not installed / not configured — picking one would hang at "创建中" forever.
 let _readiness = null;
+let _readinessLoading = false;
 
 function _kindReady(kind) {
   return !_readiness || _readiness[kind] !== false;
@@ -33,40 +32,81 @@ function _kindReady(kind) {
 function _kindOptionLabel(kind) {
   const base = KIND_LABELS[kind] || kind;
   if (_kindReady(kind)) return base;
-  return kind === 'deepseek' ? `${base}（需 API Key）` : `${base}（未检测到）`;
+  return kind === 'deepseek' ? `${base}（需 Claude CLI + API Key）` : `${base}（未检测到）`;
 }
 
 async function _refreshReadiness() {
+  _readinessLoading = true;
+  _updateCreateState();
   try {
-    const [clis, cfg] = await Promise.all([
-      ipcRenderer.invoke('detect-clis').catch(() => null),
-      ipcRenderer.invoke('get-hub-config-raw').catch(() => null),
-    ]);
-    if (!clis) return;
-    _readiness = {
-      claude: !!clis.claude,
-      codex: !!clis.codex,
-      gemini: !!clis.gemini,
-      deepseek: !!(cfg && cfg.deepseekApiKey),
-    };
+    const readiness = await ipcRenderer.invoke('get-ai-readiness');
+    if (!readiness || typeof readiness !== 'object') throw new Error('empty readiness result');
+    _readiness = readiness;
     if (_modalEl && _modalEl.style.display !== 'none') {
-      _syncGroupSlotsFromDom();
+      const readyKinds = Object.keys(MODEL_OPTIONS_BY_KIND).filter(kind => _readiness[kind] === true);
+      _groupSlots = readyKinds.length > 0
+        ? readyKinds.slice(0, MAX_GROUP_MEMBERS).map(kind => ({ kind, model: DEFAULT_MODEL_BY_KIND[kind] || '' }))
+        : [{ ...DEFAULT_GROUP_MEMBERS[0] }];
       _renderSlots();
       _renderReadyHint();
     }
-  } catch { /* readiness marks are best-effort; modal works without them */ }
+  } catch (error) {
+    _readiness = null;
+    console.error('[meeting-create-modal] readiness detection failed:', error);
+  } finally {
+    _readinessLoading = false;
+    _renderReadyHint();
+    _updateCreateState();
+  }
 }
 
 function _renderReadyHint() {
   if (!_modalEl) return;
   const hint = _modalEl.querySelector('#mcm-ready-hint');
   if (!hint) return;
+  if (_readinessLoading) {
+    hint.style.display = 'block';
+    hint.textContent = '正在检测本机 AI CLI 与 DeepSeek 配置…';
+    return;
+  }
+  if (!_readiness) {
+    hint.style.display = 'block';
+    hint.textContent = '⚠ AI 状态检测失败。为避免创建永久等待的卡片，本次暂不能创建；请关闭弹窗后重试。';
+    return;
+  }
   const missing = _readiness
     ? Object.keys(_readiness).filter(k => _readiness[k] === false).map(k => KIND_LABELS[k] || k)
     : [];
   if (missing.length === 0) { hint.style.display = 'none'; hint.textContent = ''; return; }
   hint.style.display = 'block';
-  hint.textContent = `⚠ ${missing.join(' / ')} 尚未就绪（未装 CLI 或未配 Key），选它们创建后会一直等待。可先到 ⚙️ 设置 完成配置。`;
+  hint.textContent = `⚠ ${missing.join(' / ')} 尚未具备启动条件（未装 CLI 或未配 Key），已禁止选择。可先到 ⚙️ 设置 完成配置。`;
+}
+
+function _selectedSlots() {
+  if (!_modalEl) return [];
+  return Array.from(_modalEl.querySelectorAll('.mcm-slot')).map((el, i) => ({
+    index: i,
+    kind: el.querySelector('.mcm-ai-select').value,
+    model: el.querySelector('.mcm-model-select').value,
+  }));
+}
+
+function _updateCreateState() {
+  if (!_modalEl) return;
+  const createBtn = _modalEl.querySelector('.mcm-create');
+  const addBtn = _modalEl.querySelector('#mcm-add-member');
+  const slots = _selectedSlots();
+  const unavailable = _readiness ? findUnavailableKinds(slots, _readiness) : [];
+  const blocked = _readinessLoading || !_readiness || slots.length === 0 || unavailable.length > 0;
+  if (createBtn && createBtn.textContent !== '创建群聊中...') {
+    createBtn.disabled = blocked;
+    createBtn.textContent = _readinessLoading ? '检测中...' : '创建群聊';
+  }
+  if (addBtn) {
+    const anyReady = _readiness && Object.values(_readiness).some(Boolean);
+    addBtn.disabled = !anyReady || slots.length >= MAX_GROUP_MEMBERS;
+    addBtn.title = slots.length >= MAX_GROUP_MEMBERS ? `最多支持 ${MAX_GROUP_MEMBERS} 位成员` : '';
+  }
 }
 
 function _escapeHtml(s) {
@@ -79,9 +119,9 @@ function _aiLogo(kind) {
 }
 
 function _modelOptions(kind, selected) {
-  const opts = MODELS_BY_KIND[kind] || [];
-  return opts.map((m, i) =>
-    `<option value="${_escapeHtml(m)}"${m === selected || (!selected && i === 0) ? ' selected' : ''}>${_escapeHtml(m)}</option>`
+  const opts = MODEL_OPTIONS_BY_KIND[kind] || [];
+  return opts.map((option, i) =>
+    `<option value="${_escapeHtml(option.id)}"${option.id === selected || (!selected && i === 0) ? ' selected' : ''}>${_escapeHtml(option.label)}</option>`
   ).join('');
 }
 
@@ -91,8 +131,8 @@ function _cloneSlots(slots) {
 
 function _slotHtml(i, spec, isGroup) {
   const def = spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0];
-  const aiOptions = Object.keys(MODELS_BY_KIND).map(k =>
-    `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(_kindOptionLabel(k))}</option>`
+  const aiOptions = Object.keys(MODEL_OPTIONS_BY_KIND).map(k =>
+    `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}${_readiness && !_kindReady(k) ? ' disabled' : ''}>${_escapeHtml(_kindOptionLabel(k))}</option>`
   ).join('');
   const avatarSrc = _aiLogo(def.kind);
   const avatarAlt = KIND_LABELS[def.kind] || def.kind;
@@ -140,6 +180,7 @@ function _renderSlots() {
     slotEl.querySelector('.mcm-ai-select').addEventListener('change', () => {
       _refreshModelOptions(slotEl);
       _syncGroupSlotsFromDom();
+      _updateCreateState();
     });
     slotEl.querySelector('.mcm-model-select').addEventListener('change', _syncGroupSlotsFromDom);
   });
@@ -150,6 +191,7 @@ function _renderSlots() {
       if (Number.isInteger(idx) && idx >= 0 && idx < _groupSlots.length) {
         _groupSlots.splice(idx, 1);
         _renderSlots();
+        _updateCreateState();
       }
     });
   });
@@ -194,8 +236,14 @@ function _bindEvents() {
   _modalEl.querySelector('.mcm-create').addEventListener('click', _onCreate);
   _modalEl.querySelector('#mcm-add-member').addEventListener('click', () => {
     _syncGroupSlotsFromDom();
-    _groupSlots.push({ ...DEFAULT_GROUP_MEMBERS[_groupSlots.length % DEFAULT_GROUP_MEMBERS.length] });
+    if (_groupSlots.length >= MAX_GROUP_MEMBERS) return;
+    const readyKinds = Object.keys(MODEL_OPTIONS_BY_KIND).filter(kind => _kindReady(kind));
+    const unused = readyKinds.find(kind => !_groupSlots.some(slot => slot.kind === kind));
+    const kind = unused || readyKinds[0];
+    if (!kind) return;
+    _groupSlots.push({ kind, model: DEFAULT_MODEL_BY_KIND[kind] || '' });
     _renderSlots();
+    _updateCreateState();
   });
   _modalEl.addEventListener('click', (e) => {
     if (e.target === _modalEl) closeMeetingCreateModal();
@@ -203,11 +251,13 @@ function _bindEvents() {
 }
 
 async function _onCreate() {
-  const slots = Array.from(_modalEl.querySelectorAll('.mcm-slot')).map((el, i) => ({
-    index: i,
-    kind: el.querySelector('.mcm-ai-select').value,
-    model: el.querySelector('.mcm-model-select').value,
-  }));
+  const slots = _selectedSlots();
+  const unavailable = _readiness ? findUnavailableKinds(slots, _readiness) : slots.map(slot => slot.kind);
+  if (unavailable.length > 0) {
+    _showError(`${unavailable.map(kind => KIND_LABELS[kind] || kind).join(' / ')} 尚未就绪`);
+    _updateCreateState();
+    return;
+  }
   const mode = 'general';
   const scene = 'general';
   const titleInput = _modalEl.querySelector('#mcm-title-input');
@@ -260,6 +310,8 @@ function openMeetingCreateModal() {
   _isGroupChat = true;
   _ensureModal();
   _clearError();
+  _readiness = null;
+  _readinessLoading = true;
   _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
   _renderSlots();
   _renderReadyHint();
@@ -273,14 +325,15 @@ function openMeetingCreateModal() {
   const addBtn = _modalEl.querySelector('#mcm-add-member');
   if (addBtn) addBtn.style.display = 'inline-flex';
   const createBtn = _modalEl.querySelector('.mcm-create');
-  createBtn.disabled = false;
-  createBtn.textContent = '创建群聊';
+  createBtn.disabled = true;
+  createBtn.textContent = '检测中...';
   _modalEl.style.display = 'flex';
   if (_escListener) document.removeEventListener('keydown', _escListener);
   _escListener = (e) => {
     if (e.key === 'Escape' && _modalEl.style.display !== 'none') closeMeetingCreateModal();
   };
   document.addEventListener('keydown', _escListener);
+  _updateCreateState();
 }
 
 function closeMeetingCreateModal() {

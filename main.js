@@ -4,21 +4,22 @@ const fs = require('fs');
 const crypto = require('crypto');
 const http = require('http');
 const os = require('os');
+const { pathToFileURL } = require('url');
 
-// 2026-05-16 道雪：防卡死后门 — 默认开 Chromium CDP 端口（OS 自动分配）。
-//   实际分配的端口在启动后写入 <dataDir>/control/<pid>.json 的 cdpPort 字段，
-//   救援脚本 tools/hub-escape.ps1 + Playwright/DevTools 可 attach 进 Hub。
-//   设环境变量 CLAUDE_HUB_NO_CDP=1 可关闭。
+// Chromium CDP exposes the renderer's Node-enabled context and therefore must
+// never be enabled by default in a public build. Tests/support sessions can opt
+// in with CLAUDE_HUB_ENABLE_CDP=1 or pass --remote-debugging-port explicitly.
 //   必须在 app.whenReady() 之前 appendSwitch 才生效。
 //   注：如果启动命令行已经传了 --remote-debugging-port（E2E 测试用 hub-launcher 的场景），
 //   不重复 append，避免 Chromium argv 冲突。
 const _hasCdpSwitch = process.argv.some(a => a.startsWith('--remote-debugging-port'));
-if (process.env.CLAUDE_HUB_NO_CDP !== '1' && !_hasCdpSwitch) {
+const _cdpEnabled = _hasCdpSwitch || process.env.CLAUDE_HUB_ENABLE_CDP === '1';
+if (_cdpEnabled && !_hasCdpSwitch) {
   app.commandLine.appendSwitch('remote-debugging-port', '0');
 }
 const { SessionManager, clearSessionManagerConfigCache } = require('./core/session-manager.js');
 const stateStore = require('./core/state-store.js');
-const { getHubDataDir, isIsolatedHub, getMeetingWorkspaceDir } = require('./core/data-dir.js');
+const { getHubDataDir, getMeetingWorkspaceDir } = require('./core/data-dir.js');
 const hubControl = require('./core/hub-control.js');
 const { MeetingRoomManager } = require('./core/meeting-room.js');
 const meetingStore = require('./core/meeting-store.js');
@@ -40,6 +41,14 @@ const {
   filterUsageCacheForCodexScope,
 } = require('./core/codex-usage-scope.js');
 const { ALL_AI_KINDS, isClaudeFamily, isCodexCliKind, SLOT_IDS, KIND_LABELS, getSlotPromptName, getSlotDisplayLabel, slotIdToIndex, slotIndexToId } = require('./core/ai-kinds.js');
+const { buildProviderReadiness } = require('./core/provider-readiness.js');
+const { stripHubHookEntries } = require('./core/claude-hook-settings.js');
+const {
+  isAllowedExternalUrl,
+  isAllowedPreviewUrl,
+  isLocalHtmlPreviewUrl,
+  isTrustedMainNavigation,
+} = require('./core/navigation-policy.js');
 const { registerConfigIpc } = require('./main/ipc/config-handlers.js');
 const { registerPathIpc } = require('./main/ipc/path-handlers.js');
 const { registerSessionIpc } = require('./main/ipc/session-handlers.js');
@@ -125,13 +134,12 @@ if (process.env.CLAUDE_HUB_DATA_DIR) {
   app.setPath('userData', path.join(process.env.CLAUDE_HUB_DATA_DIR, 'electron-userdata'));
 }
 
-// Auto-deploy hook scripts + settings.json config on first launch.
-// Idempotent — skips if already present, never overwrites user's existing hooks.
+// Deploy hook scripts only for Hub-managed config or after explicit opt-in.
+// Idempotent — skips if already present and preserves unrelated user hooks.
 // claudeDirPath: target Claude config dir (e.g. ~/.claude or ~/.claude-deepseek)
 // opts.hubManaged: true only for Hub-owned isolated config dirs (~/.claude-deepseek).
-// For the user's primary ~/.claude we ONLY add our hooks/statusline — we must never
-// touch their permissionMode or folder-trust state (those change how their daily
-// Claude Code behaves and are not ours to decide).
+// The user's primary ~/.claude is modified only when the user enables the Hook
+// integration. Permission mode, statusline and folder trust remain untouched.
 function ensureHooksDeployed(claudeDirPath, opts = {}) {
   const hubManaged = !!opts.hubManaged;
   const claudeDir = claudeDirPath;
@@ -203,21 +211,13 @@ function ensureHooksDeployed(claudeDirPath, opts = {}) {
     changed = true;
   }
 
-  // Statusline: only set when the user has none — never overwrite a statusline
-  // the user configured themselves. (Hub-managed isolated dirs always get ours.)
-  if (!settings.statusLine || (hubManaged && !String(settings.statusLine.command || '').includes('claude-hub-statusline'))) {
+  // Statusline belongs only in Hub-managed isolated config. Never add or replace
+  // a statusline in the user's primary ~/.claude settings.
+  if (hubManaged && (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline'))) {
     settings.statusLine = {
       type: 'command',
       command: `node "${statusJsPath}"`
     };
-    changed = true;
-  }
-
-  // 3. Ensure bypass-permissions — ONLY for Hub-managed isolated config dirs
-  //    (~/.claude-deepseek), so DeepSeek sessions start without trust prompts.
-  //    Never change permissionMode of the user's primary ~/.claude.
-  if (hubManaged && settings.permissionMode !== 'bypassPermissions') {
-    settings.permissionMode = 'bypassPermissions';
     changed = true;
   }
 
@@ -251,27 +251,37 @@ function ensureHooksDeployed(claudeDirPath, opts = {}) {
   } catch { /* .claude.json 不存在或格式异常，跳过（首次启动可能尚未生成） */ }
 }
 
-// Ensure Codex CLI status bar includes context-remaining so the scanner can
-// parse context usage. Idempotent — only patches if the key is absent.
-function ensureCodexContextConfig() {
-  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  const codexDir = path.join(home, '.codex');
-  if (!fs.existsSync(codexDir)) return; // user has no Codex CLI — don't create its config dir
-  const configPath = path.join(codexDir, 'config.toml');
+// (This edition ships no stock-research MCP; Gemini research MCP auto-install removed.)
+
+function detectCliCommands() {
+  const { execFileSync } = require('child_process');
+  const has = (cmd) => {
+    try {
+      execFileSync('where', [cmd], { stdio: 'ignore', timeout: 4000, windowsHide: true });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return { claude: has('claude'), codex: has('codex'), gemini: has('gemini'), python: has('python') };
+}
+
+function removeHubHooksFromPrimarySettings(claudeDirPath) {
+  const settingsPath = path.join(claudeDirPath, 'settings.json');
   try {
-    let content = '';
-    try { content = fs.readFileSync(configPath, 'utf8'); } catch {}
-    if (content.includes('status_line')) return;
-    const line = '\n[tui]\nstatus_line = ["model-with-reasoning", "context-remaining", "current-dir"]\n';
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.appendFileSync(configPath, line);
-    console.log('[群聊] codex config.toml patched with context-remaining');
-  } catch (e) {
-    console.warn('[群聊] codex config patch failed:', e.message);
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const result = stripHubHookEntries(settings);
+    if (!result.changed) return;
+    fs.writeFileSync(settingsPath, JSON.stringify(result.settings, null, 2), 'utf8');
+    console.log('[群聊] removed disabled Hub hooks from primary Claude settings');
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') console.warn('[群聊] failed to reconcile primary Claude hooks:', err.message);
   }
 }
 
-// (This edition ships no stock-research MCP; Gemini research MCP auto-install removed.)
+function getProviderReadiness() {
+  return buildProviderReadiness(detectCliCommands(), getHubConfig());
+}
 
 // Read the last user message text from a Claude Code transcript JSONL file.
 // Reads the trailing chunk(s) only (not the whole file) — long sessions can be
@@ -585,28 +595,50 @@ function createWindow() {
   });
   setTimeout(showMainWindow, 4000);
 
-  // 主 webContents 导航防护（2026-05-17 道雪）：renderer 若误把 https 链接渲染成
-  //   <a> 或 location.href = url，会让主 webContents 整个 navigate 走，preload IPC
-  //   失效、Hub 卡死。把外部协议一律转发系统浏览器，主窗口只允许 file://。
-  //   webview 内部导航走 webview 的 webContents，不受这里影响。
-  const isInternalNavUrl = (urlStr) => {
-    try {
-      const u = new URL(urlStr);
-      return u.protocol === 'file:' || u.protocol === 'about:' || u.protocol === 'chrome:' || u.protocol === 'devtools:';
-    } catch { return true; }
+  // This renderer still needs Node integration. Keep that trust boundary narrow:
+  // only the packaged index may load in the main frame, and every preview guest
+  // has Node disabled even when it displays a local HTML file.
+  const trustedIndexUrl = pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).href;
+  const openAllowedExternal = (urlStr) => {
+    if (!isAllowedExternalUrl(urlStr)) {
+      console.warn('[nav-guard] blocked unsupported external URL:', urlStr);
+      return;
+    }
+    shell.openExternal(urlStr).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
   };
   const interceptNavigate = (event, urlStr) => {
-    if (isInternalNavUrl(urlStr)) return;
+    if (isTrustedMainNavigation(urlStr, trustedIndexUrl)) return;
     event.preventDefault();
-    console.log('[nav-guard] block main webContents navigate to', urlStr, '→ openExternal');
-    shell.openExternal(urlStr).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
+    openAllowedExternal(urlStr);
   };
   mainWindow.webContents.on('will-navigate', interceptNavigate);
   mainWindow.webContents.on('will-redirect', interceptNavigate);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isInternalNavUrl(url)) return { action: 'allow' };
-    shell.openExternal(url).catch((e) => console.warn('[nav-guard] openExternal failed:', e && e.message));
+    openAllowedExternal(url);
     return { action: 'deny' };
+  });
+
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+    webPreferences.allowRunningInsecureContent = false;
+    if (isLocalHtmlPreviewUrl(params.src)) webPreferences.javascript = false;
+    if (!isAllowedPreviewUrl(params.src)) event.preventDefault();
+  });
+  mainWindow.webContents.on('did-attach-webview', (_event, guest) => {
+    const guardPreviewNavigation = (event, urlStr) => {
+      if (!isAllowedPreviewUrl(urlStr)) event.preventDefault();
+    };
+    guest.on('will-navigate', guardPreviewNavigation);
+    guest.on('will-redirect', guardPreviewNavigation);
+    guest.setWindowOpenHandler(({ url }) => {
+      openAllowedExternal(url);
+      return { action: 'deny' };
+    });
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -683,13 +715,13 @@ registerMeetingCreateIpc(ipcMain, {
   getHookPort: () => hookPort,
   getHubDataDir,
   getMeetingWorkspaceDir,
+  getProviderReadiness,
   getSlotPromptName,
   groupchat,
   hookToken: HOOK_TOKEN,
   isClaudeFamily,
   isCodexBaseKind,
   isCodexSubagentRolloutPath,
-  isIsolatedHub,
   kindLabels: KIND_LABELS,
   meetingManager,
   path,
@@ -892,14 +924,8 @@ registerAppUtilityIpc(ipcMain, {
 registerPathIpc(ipcMain);
 
 // Detect which AI CLIs are available on PATH — powers the first-run welcome guide.
-ipcMain.handle('detect-clis', async () => {
-  const { execFileSync } = require('child_process');
-  const has = (cmd) => {
-    try { execFileSync('where', [cmd], { stdio: 'ignore', timeout: 4000, windowsHide: true }); return true; }
-    catch { return false; }
-  };
-  return { claude: has('claude'), codex: has('codex'), gemini: has('gemini'), python: has('python') };
-});
+ipcMain.handle('detect-clis', async () => detectCliCommands());
+ipcMain.handle('get-ai-readiness', async () => getProviderReadiness());
 
 // --- Hook HTTP server ---
 // Receives POSTs from ~/.claude/scripts/session-hub-hook.py when Claude Code
@@ -1426,30 +1452,28 @@ app.whenReady().then(async () => {
   traceStartup('app.whenReady');
   const _home = process.env.USERPROFILE || process.env.HOME || os.homedir();
   traceStartup('deploy hooks start');
-  // 2026-05-05 道雪：所有 Claude family 隔离配置目录都必须部署 Stop hook，否则
-  //   该家族 sub session 完成时 CC 不调 hook → notifyClaudeStop 永不触发 →
-  //   ClaudeTap.JsonlTail 永不启动 → stop_reason 主路径 + idle 兜底全失效 →
-  //   群聊卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
-  //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
-  //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
-  // Hook deployment requires python (the hook command is `python session-hub-hook.py`).
-  // Without python, skip entirely — otherwise every Claude Code session on this
-  // machine would show a failing-hook error. Card sync degrades gracefully.
+  // Hook deployment requires Python. DeepSeek uses a Hub-managed config and
+  // always receives the hook when possible; the user's primary Claude config
+  // receives it only after explicit opt-in. Transcript terminal-state polling
+  // remains the no-hook fallback.
   let pythonAvailable = false;
   try {
     require('child_process').execFileSync('where', ['python'], { stdio: 'ignore', timeout: 4000, windowsHide: true });
     pythonAvailable = true;
   } catch {}
+  const primaryClaudeDir = path.join(_home, '.claude');
+  if (pythonAvailable && getHubConfig().claudeHookIntegration) {
+    ensureHooksDeployed(primaryClaudeDir, { hubManaged: false });
+  } else {
+    // Also migrates v1.0.0 users away from the old implicit global hooks.
+    removeHubHooksFromPrimarySettings(primaryClaudeDir);
+  }
   if (pythonAvailable) {
-    ensureHooksDeployed(path.join(_home, '.claude'), { hubManaged: false });
     ensureHooksDeployed(path.join(_home, '.claude-deepseek'), { hubManaged: true });
   } else {
     console.warn('[群聊] python not found on PATH — skipping hook deployment (card auto-sync disabled until python is installed)');
   }
   traceStartup('deploy hooks done');
-  traceStartup('codex config start');
-  ensureCodexContextConfig();
-  traceStartup('codex config done');
   traceStartup('createWindow start');
   createWindow();
   traceStartup('createWindow done');
@@ -1472,7 +1496,7 @@ app.whenReady().then(async () => {
   try {
     const dataDir = getHubDataDir();
     let cdpPort = null;
-    if (process.env.CLAUDE_HUB_NO_CDP !== '1') {
+    if (_cdpEnabled) {
       // Chromium 只在 --remote-debugging-port=0（OS 自动分配）时才写 DevToolsActivePort 文件；
       // 当 CLI 已传明确端口（E2E hub-launcher 场景）时直接从 argv 解析。
       if (_hasCdpSwitch) {

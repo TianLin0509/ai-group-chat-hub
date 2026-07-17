@@ -8,10 +8,13 @@ const {
   getConfigPath,
   DEFAULTS,
 } = require('../../core/hub-config.js');
+const { normalizeExecutionMode } = require('../../core/agent-launch-policy.js');
 
 function toMaskedConfig(config) {
   return {
     proxy: config.proxy,
+    agentExecutionMode: normalizeExecutionMode(config.agentExecutionMode),
+    claudeHookIntegration: config.claudeHookIntegration === true,
     claudeBackend: config.claudeBackend,
     claudeApiKey: config.claudeApiKey ? '***' + config.claudeApiKey.slice(-4) : '',
     claudeApiKeySet: !!config.claudeApiKey,
@@ -32,6 +35,8 @@ function toMaskedConfig(config) {
 function toEditableConfig(config) {
   return {
     proxy: config.proxy,
+    agentExecutionMode: normalizeExecutionMode(config.agentExecutionMode),
+    claudeHookIntegration: config.claudeHookIntegration === true,
     claudeBackend: config.claudeBackend,
     claudeApiKey: config.claudeApiKey || '',
     claudeApiBaseUrl: config.claudeApiBaseUrl,
@@ -58,6 +63,18 @@ function buildConfigJsonUpdate(existing, newConfig) {
   const merged = {
     ...existing,
     proxy: { http: H('proxy') ? (newConfig.proxy || DEFAULTS.proxy) : (existing.proxy?.http || DEFAULTS.proxy) },
+    execution: {
+      ...(existing.execution || {}),
+      mode: H('agentExecutionMode')
+        ? normalizeExecutionMode(newConfig.agentExecutionMode)
+        : normalizeExecutionMode(existing.execution?.mode),
+    },
+    integrations: {
+      ...(existing.integrations || {}),
+      claude_hooks: H('claudeHookIntegration')
+        ? newConfig.claudeHookIntegration === true
+        : existing.integrations?.claude_hooks === true,
+    },
     providers: {
       ...(existing.providers || {}),
       claude: {
@@ -82,13 +99,23 @@ function buildConfigJsonUpdate(existing, newConfig) {
       codex: (() => {
         return {
           ...(existing.providers?.codex || {}),
-          backend: newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend,
-          subscription_profile: newConfig.codexSubscriptionProfile || DEFAULTS.codex_subscription_profile,
-          subscription_profiles: Array.isArray(newConfig.codexSubscriptionProfiles) ? newConfig.codexSubscriptionProfiles : undefined,
-          api_key: newConfig.codexApiKey || undefined,
-          base_url: newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url,
-          model: newConfig.codexApiModel || DEFAULTS.codex_api_model,
-          provider: DEFAULTS.codex_api_provider,
+          backend: H('codexBackend')
+            ? (newConfig.codexBackend === 'api' ? 'api' : DEFAULTS.codex_backend)
+            : (existing.providers?.codex?.backend || DEFAULTS.codex_backend),
+          subscription_profile: H('codexSubscriptionProfile')
+            ? (newConfig.codexSubscriptionProfile || DEFAULTS.codex_subscription_profile)
+            : (existing.providers?.codex?.subscription_profile || DEFAULTS.codex_subscription_profile),
+          subscription_profiles: H('codexSubscriptionProfiles')
+            ? (Array.isArray(newConfig.codexSubscriptionProfiles) ? newConfig.codexSubscriptionProfiles : undefined)
+            : existing.providers?.codex?.subscription_profiles,
+          api_key: H('codexApiKey') ? (newConfig.codexApiKey || undefined) : existing.providers?.codex?.api_key,
+          base_url: H('codexApiBaseUrl')
+            ? (newConfig.codexApiBaseUrl || DEFAULTS.codex_api_base_url)
+            : (existing.providers?.codex?.base_url || DEFAULTS.codex_api_base_url),
+          model: H('codexApiModel')
+            ? (newConfig.codexApiModel || DEFAULTS.codex_api_model)
+            : (existing.providers?.codex?.model || DEFAULTS.codex_api_model),
+          provider: existing.providers?.codex?.provider || DEFAULTS.codex_api_provider,
         };
       })(),
     },
@@ -143,7 +170,7 @@ function registerConfigIpc(ipcMain, deps) {
     saveConfig(merged);
     clearSessionManagerConfigCache();
 
-    if (newConfig.codexBackend !== undefined || newConfig.codexSubscriptionProfile !== undefined) {
+    if (newConfig.codexBackend !== undefined || newConfig.codexSubscriptionProfile !== undefined || newConfig.agentExecutionMode !== undefined) {
       const scope = currentCodexUsageScope();
       clearCodexJsonlCache();
       sendToRenderer('agent-usage', { codex: attachCodexUsageScope({ usage5h: null, usage7d: null, unavailable: true }, scope) });

@@ -20,9 +20,9 @@ const MARKERS = {
   // Newer Claude-family TUI can render
   // "? for shortcuts" without the old shift+tab footer in the ring buffer.
   claude: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
-  gemini: ['Type your message', 'YOLO', 'gemini-'],
-  // Do not use model ids such as "gpt-5.6-sol" here: the PowerShell launch
-  // command itself contains "--model gpt-5.6-sol", which can falsely mark Codex
+  gemini: ['Type your message', 'AUTO EDIT', 'Auto Edit', 'YOLO', 'gemini-'],
+  // Do not use model ids here: the PowerShell launch command itself can contain
+  // "--model <id>", which can falsely mark Codex
   // ready before the TUI input box exists.
   codex: ['Context '],
   deepseek: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],

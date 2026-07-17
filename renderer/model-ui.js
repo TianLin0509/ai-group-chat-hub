@@ -111,11 +111,12 @@ function createModelUiController({ document, ipcRenderer, sessions, terminalPane
       options.forEach((opt) => {
         const item = document.createElement('div');
         item.className = 'model-picker-item';
-        if (!inlineOk) item.classList.add('disabled');
+        const selectable = inlineOk && !!opt.id;
+        if (!selectable) item.classList.add('disabled');
         item.dataset.modelId = opt.id;
         if (opt.id === currentId) item.classList.add('current');
         item.innerHTML = `<span class="model-picker-check">${opt.id === currentId ? '\u2713' : ''}</span><span class="model-picker-label">${escapeHtml(opt.label)}</span><span class="model-picker-id">${escapeHtml(opt.id)}</span>`;
-        if (inlineOk) {
+        if (selectable) {
           item.addEventListener('click', (e) => {
             e.stopPropagation();
             ipcRenderer.send('terminal-input', { sessionId, data: `/model ${opt.id}\r` });

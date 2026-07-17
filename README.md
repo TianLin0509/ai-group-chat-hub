@@ -6,9 +6,11 @@
 
 ![主界面](docs/screenshots/main-empty.png)
 
-| 首次启动欢迎向导（自动检测已装的 AI） | 建群：未就绪的 AI 会被标出 |
+![首次启动欢迎向导](docs/screenshots/welcome-guide.png)
+
+| 建群：具备启动条件的成员 | 建群：未就绪成员直接标出并禁选 |
 |---|---|
-| ![欢迎向导](docs/screenshots/welcome-guide.png) | ![建群弹窗](docs/screenshots/create-group-notready.png) |
+| ![建群弹窗正例](docs/screenshots/create-group.png) | ![建群弹窗负例](docs/screenshots/create-group-notready.png) |
 
 ---
 
@@ -24,7 +26,7 @@
 
 ## 🚀 快速开始
 
-> Windows 10/11。需要先装 [Node.js 18+](https://nodejs.org/)（LTS 版即可）。
+> Windows 10/11。源码安装需要 [Node.js 20+](https://nodejs.org/)（LTS 版即可）；安装器用户不需要 Node.js。
 
 ### 方式 A：源码 + 一键脚本（推荐，可改代码）
 
@@ -42,7 +44,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 > 安装器未做代码签名，Windows SmartScreen 可能弹「已保护你的电脑」——点 **更多信息 → 仍要运行** 即可（源码就在本仓库，可自行审计/自行打包）。
 
-**首次启动会有欢迎向导**，自动检测你本机装了哪些 AI CLI，并提示还差什么、怎么补。
+**首次启动会有欢迎向导**，检测本机是否能找到 AI CLI，并提示还差什么、怎么补。命令存在不等于账号已登录，第一次建群前仍建议在终端跑通对应 CLI。
 
 ---
 
@@ -53,8 +55,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | **Claude** | 装 Claude Code CLI 且命令行能跑通 `claude` | 订阅登录或填 API Key 均可 |
 | **Codex** | 装 Codex CLI 且能跑通 `codex` | 登录 ChatGPT（订阅）或填 API |
 | **Gemini** | 装 Gemini CLI 且能跑通 `gemini` | 本机登录 |
-| **DeepSeek** | 在设置里填 DeepSeek API Key | 不用装 CLI，复用 Claude CLI 运行 |
-| Python 3（可选） | `python` 在 PATH | 群聊卡片自动同步依赖它 |
+| **DeepSeek** | Claude CLI 可用 + 设置里填 DeepSeek API Key | 通过 Claude CLI 接入 DeepSeek API |
+| Python 3（可选） | `python` 在 PATH | 开启 Claude Hook 快速同步时需要 |
 
 只装其中一个也能用——群聊里放你有的那家即可。
 
@@ -63,8 +65,16 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ## ⚙️ 配置（零配置起步）
 
 - **不配置也能启动**。首次向导会带你看清缺什么。
-- 右上角 **⚙️ 设置** 里可填：HTTP 代理（默认空=直连）、各家 backend / API Key / 模型。
+- 右上角 **⚙️ 设置** 里可填：HTTP 代理（默认空=直连）、执行权限、Claude Hook、各家 backend / API Key / 模型。
 - 配置存本机 `~/.claude-session-hub/config.json`（API Key 明文存本地，仅本机使用，不上传、不进仓库）。
+
+### 安全默认
+
+- 默认使用**安全模式**：Claude `acceptEdits`、Gemini `auto_edit`、Codex `--full-auto`（工作区写入 + 按需审批）；只有手动切到“完全自动”才跳过审批/沙箱。
+- 每个群聊使用 `~/.claude-session-hub/workspaces/<meetingId>` 独立工作目录，不再把整个用户主目录当作默认工作区。
+- Claude Hook 默认关闭，不会静默改写 `~/.claude/settings.json`；开启后仅添加两个可识别、可撤销的 Hub Hook。
+- Chromium 远程调试默认关闭；只在测试/支持场景显式设置 `CLAUDE_HUB_ENABLE_CDP=1` 时开启。
+- 主窗口仍采用 Electron Node 集成以兼容现有终端架构；预览 webview 禁用 Node，且本地 HTML 额外禁用页面 JavaScript、拒绝 UNC `file:` 地址。远程网页仍按普通网页执行脚本，请只打开可信网址。
 
 ---
 
@@ -75,7 +85,7 @@ main.js            Electron 主进程入口
 main/              主进程 IPC + 群聊派发 + 循环工作流引擎
 core/              会话/会议数据模型、AI 种类、配置、编排
 renderer/          前端界面（侧栏、群聊房间、设置、欢迎向导）
-scripts/           Claude Code hook（卡片自动同步）
+scripts/           可选 Claude Code hook（卡片快速同步）
 install.ps1        一键安装脚本
 start.bat          启动脚本
 ```

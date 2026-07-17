@@ -90,7 +90,7 @@
             <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
             <span><kbd>Ctrl</kbd>+<kbd>K</kbd> 搜索</span>
             <span><kbd>Ctrl</kbd>+<kbd>B</kbd> 收侧栏</span>
-            <span class="launcher-version">v1.0.0</span>
+            <span class="launcher-version">v…</span>
           </div>
         </div>
       </div>
@@ -211,10 +211,26 @@
       <div class="config-modal-body">
         <div id="config-main-view">
           <p class="config-hint">配置全局代理和核心 AI 的接入方式。Codex / DeepSeek 的变更会在新建会话时生效。</p>
-          <div class="config-field">
-            <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
-            <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
-          </div>
+           <div class="config-field">
+             <label>HTTP 代理 <span class="config-label-hint">（VPN/Clash 端口）</span></label>
+             <input type="text" id="cfg-proxy" placeholder="http://127.0.0.1:7890" spellcheck="false">
+           </div>
+           <div class="config-field">
+             <label>AI 执行权限 <span class="config-label-hint">（新会话生效）</span></label>
+             <select id="cfg-execution-mode">
+               <option value="safe">安全模式（推荐：编辑自动，命令仍受审批/沙箱保护）</option>
+               <option value="dangerous">完全自动（高风险：跳过审批与沙箱）</option>
+             </select>
+             <div class="config-note">公开版默认使用安全模式。只有在隔离环境且明确理解风险时，才选择“完全自动”。</div>
+           </div>
+           <div class="config-field">
+             <label>Claude Hook 快速同步 <span class="config-label-hint">（重启 Hub 生效）</span></label>
+             <select id="cfg-claude-hook-integration">
+               <option value="off">关闭（推荐：不修改 ~/.claude/settings.json）</option>
+               <option value="on">开启（更快同步卡片，会写入两个 Hub 专用 Hook）</option>
+             </select>
+             <div class="config-note">关闭时仍使用 transcript 终态检测；开启后，Hub 会向 Claude Code 的 Stop / UserPromptSubmit 配置添加可识别、可撤销的本地 Hook。</div>
+           </div>
           <div class="config-section-label">
             <span>AI 模型</span>
             <span>点击进入详情</span>
@@ -224,7 +240,7 @@
               <span class="config-ai-mark claude">CL</span>
               <span class="config-ai-copy">
                 <strong>Claude</strong>
-                <small id="cfg-summary-claude">订阅模式 · claude-opus-4-8[1m]</small>
+                <small id="cfg-summary-claude">订阅模式 · 跟随 CLI 默认</small>
               </span>
               <span class="config-ai-status subscription">订阅</span>
             </button>
@@ -232,7 +248,7 @@
               <span class="config-ai-mark gemini">GE</span>
               <span class="config-ai-copy">
                 <strong>Gemini</strong>
-                <small id="cfg-summary-gemini">订阅模式 · gemini-3-pro-preview</small>
+                <small id="cfg-summary-gemini">订阅模式 · 跟随 CLI 默认</small>
               </span>
               <span class="config-ai-status subscription">订阅</span>
             </button>
@@ -240,7 +256,7 @@
               <span class="config-ai-mark codex">CX</span>
               <span class="config-ai-copy">
                 <strong>Codex</strong>
-                <small id="cfg-summary-codex">订阅模式 · gpt-5.6-sol</small>
+                <small id="cfg-summary-codex">订阅模式 · 跟随 CLI 默认</small>
               </span>
               <span class="config-ai-status" id="cfg-status-codex">订阅</span>
             </button>
@@ -286,7 +302,7 @@
             </div>
             <div class="config-field">
               <label>Claude API Model</label>
-              <input type="text" id="cfg-claude-model" placeholder="claude-opus-4-8[1m]" spellcheck="false">
+              <input type="text" id="cfg-claude-model" placeholder="留空则跟随 Claude CLI 默认；也可填 opus / sonnet" spellcheck="false">
             </div>
           </div>
 
@@ -302,7 +318,7 @@
               <label>Codex 后端 <span class="config-label-hint">（全 Hub 生效）</span></label>
               <select id="cfg-codex-backend">
                 <option value="subscription">订阅 / ChatGPT 登录</option>
-                <option value="api">第三方 API / Packy</option>
+                <option value="api">第三方 OpenAI 兼容 API</option>
               </select>
             </div>
             <div class="config-field">
@@ -321,7 +337,7 @@
               <label>新账号 CODEX_HOME</label>
               <input type="text" id="cfg-codex-profile-second-home" placeholder="留空则不启用第二账号；或填该账号的配置目录" spellcheck="false">
             </div>
-            <div class="config-note">API 模式仍以 gpt-5.6-sol、YOLO、信任当前目录启动，目标是和订阅模式体感一致。</div>
+            <div class="config-note">API 模式使用隔离 CODEX_HOME；执行权限仍遵循上方“AI 执行权限”，默认不会绕过审批与沙箱。</div>
             <div class="config-field">
               <label>Codex API Key</label>
               <input type="password" id="cfg-codex-key" placeholder="sk-..." spellcheck="false">
@@ -332,7 +348,7 @@
             </div>
             <div class="config-field">
               <label>Codex API Model</label>
-              <input type="text" id="cfg-codex-model" placeholder="gpt-5.6-sol" spellcheck="false">
+              <input type="text" id="cfg-codex-model" placeholder="gpt-5.6" spellcheck="false">
             </div>
           </div>
 
