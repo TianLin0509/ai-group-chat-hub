@@ -1,0 +1,134 @@
+'use strict';
+
+const { didClaudeSnapshotAdvance } = require('../usage/claude-statusline-usage.js');
+
+function hasUsageData(value) {
+  if (!value || value.unavailable) return false;
+  return [value.usage5h, value.usage7d]
+    .some(window => window && typeof window.pct === 'number' && Number.isFinite(window.pct));
+}
+
+function registerUsageIpc(ipcMain, deps) {
+  const {
+    clearCodexJsonlCache,
+    loadUsageCacheForCurrentConfig,
+    refreshClaudeAccountUsage,
+    refreshCodexAccountUsage,
+    scanAgentSessions,
+  } = deps;
+
+  const usageChanged = (before, after) => JSON.stringify({
+    usage5h: before && before.usage5h || null,
+    usage7d: before && before.usage7d || null,
+  }) !== JSON.stringify({
+    usage5h: after && after.usage5h || null,
+    usage7d: after && after.usage7d || null,
+  });
+
+  const errorText = (err, fallback) => err && err.message ? err.message : fallback;
+
+  ipcMain.handle('get-usage-cache', () => loadUsageCacheForCurrentConfig());
+
+  ipcMain.handle('refresh-usage-now', async () => {
+    const before = loadUsageCacheForCurrentConfig() || {};
+    const providerResults = {};
+    let refreshedClaudeData = null;
+
+    try {
+      const rawClaude = typeof refreshClaudeAccountUsage === 'function'
+        ? await refreshClaudeAccountUsage()
+        : null;
+      const claudeData = rawClaude && rawClaude.data ? rawClaude.data : rawClaude;
+      refreshedClaudeData = claudeData;
+      const observedAt = rawClaude && rawClaude.observedAt
+        || claudeData && (claudeData.observedAt || claudeData.ts)
+        || before.claude && (before.claude.observedAt || before.claude.ts)
+        || 0;
+      providerResults.claude = {
+        ok: hasUsageData(claudeData) || hasUsageData(before.claude),
+        changed: rawClaude && typeof rawClaude.changed === 'boolean'
+          ? rawClaude.changed
+          : didClaudeSnapshotAdvance(before.claude, claudeData),
+        mode: 'snapshot',
+        source: rawClaude && rawClaude.source || 'statusline-cache',
+        observedAt,
+      };
+    } catch (err) {
+      providerResults.claude = {
+        ok: false,
+        changed: false,
+        mode: 'snapshot',
+        source: 'statusline-cache',
+        observedAt: before.claude && (before.claude.observedAt || before.claude.ts) || 0,
+        error: errorText(err, 'Claude 状态线快照读取失败'),
+      };
+    }
+
+    let agentData = {};
+    let liveError = null;
+    try {
+      if (typeof refreshCodexAccountUsage !== 'function') {
+        throw new Error('Codex 实时刷新不可用');
+      }
+      const liveCodex = await refreshCodexAccountUsage();
+      if (!hasUsageData(liveCodex)) {
+        throw new Error('Codex 实时刷新未返回配额');
+      }
+      agentData.codex = liveCodex;
+      providerResults.codex = {
+        ok: true,
+        changed: usageChanged(before.codex, liveCodex),
+        mode: 'live',
+        source: liveCodex.source || 'app-server',
+        observedAt: liveCodex.observedAt || liveCodex._ts || Date.now(),
+      };
+    } catch (err) {
+      liveError = errorText(err, 'Codex 实时刷新失败');
+    }
+
+    if (!agentData.codex) {
+      if (typeof clearCodexJsonlCache === 'function') clearCodexJsonlCache();
+      agentData = typeof scanAgentSessions === 'function'
+        ? (scanAgentSessions({ force: true }) || {})
+        : {};
+      const fallbackCodex = agentData.codex || null;
+      providerResults.codex = {
+        ok: hasUsageData(fallbackCodex),
+        changed: usageChanged(before.codex, fallbackCodex),
+        mode: 'fallback',
+        source: fallbackCodex && fallbackCodex.source || 'jsonl',
+        observedAt: fallbackCodex && (fallbackCodex.observedAt || fallbackCodex._ts) || 0,
+        degraded: true,
+        error: liveError,
+      };
+    }
+
+    const finalCache = loadUsageCacheForCurrentConfig() || {};
+    const finalClaude = finalCache.claude || refreshedClaudeData || before.claude || null;
+    const initialClaudeResult = providerResults.claude;
+    const initialClaudeObservedAt = initialClaudeResult && initialClaudeResult.observedAt || 0;
+    const finalClaudeObservedAt = finalClaude && (finalClaude.observedAt || finalClaude.ts) || 0;
+    if (initialClaudeResult
+      && (didClaudeSnapshotAdvance(refreshedClaudeData || before.claude, finalClaude)
+        || finalClaudeObservedAt > initialClaudeObservedAt)) {
+      providerResults.claude = {
+        ...initialClaudeResult,
+        ok: hasUsageData(finalClaude),
+        changed: didClaudeSnapshotAdvance(before.claude, finalClaude),
+        observedAt: finalClaudeObservedAt,
+      };
+    }
+
+    return {
+      cache: finalCache,
+      agentData,
+      providerResults,
+      refreshedAt: Date.now(),
+    };
+  });
+}
+
+module.exports = {
+  hasUsageData,
+  registerUsageIpc,
+};

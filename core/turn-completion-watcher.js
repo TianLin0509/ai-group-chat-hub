@@ -1,0 +1,276 @@
+'use strict';
+// Stage 2 容错升级（2026-05-01）— 单家 AI 群聊等待器
+//
+// 替代 main.js 老 _gcWaitTurnComplete 内联实现的"硬性 watchdog"：
+//   旧版：600s 强制 timeout → 整轮 settle → 按钮锁 10 分钟。
+//   新版：永不自动 settle，只在 T1=90s / T2=180s 触发非阻塞软提醒回调；
+//        真正退出由用户操作（manualExtract / skip）或 transcriptTap 的协议级
+//        L1/L2 事件（turn-complete / turn-error）决定。
+//
+// 设计文档：
+//   历史韧性设计文档 (Task 2)
+//
+// 状态机：
+//   wait() called → submitted（监听 + T1/T2 定时器启动）
+//      ├─→ transcriptTap turn-complete → status: 'completed'
+//      ├─→ transcriptTap turn-error    → status: 'errored'
+//      ├─→ manualExtract(text)         → status: 'manual_extracted'
+//      ├─→ skip()                      → status: 'absent'
+//      └─→ T1/T2 触发 onSoftAlert(level)，**不 settle**，等待真触发点
+//
+// 注意：watcher 本身不处理 L2（PTY exit）信号——P1 阶段在 main.js 里通过
+//   onProcessExit 钩子注入。本文件只暴露 onProcessExit 占位，预留 P1 接入。
+
+const DEFAULT_T1_MS = 90000;
+const DEFAULT_T2_MS = 180000;
+
+const PATCH_WINDOW_MS = 300_000;  // 5 分钟（spec 2026-05-03）
+
+function createTurnCompletionWatcher(opts) {
+  const {
+    transcriptTap,
+    hubSessionId,
+    label,
+    softAlertT1Ms = DEFAULT_T1_MS,
+    softAlertT2Ms = DEFAULT_T2_MS,
+    onSoftAlert = () => {},
+    // P1 占位：接入 PTY 退出事件作为 L2 信号源。watcher 不主动监听进程，
+    //   由调用方在 PTY exit 时调 watcher 的 markProcessExit() 钩子。
+    onProcessExit = null, // eslint-disable-line no-unused-vars
+    onTurnPatched = null,                   // 新增（2026-05-03）
+    patchWindowMs = PATCH_WINDOW_MS,        // 新增（测试可注入更短的窗口）
+  } = opts || {};
+
+  if (!transcriptTap) throw new Error('createTurnCompletionWatcher: transcriptTap required');
+  if (!hubSessionId) throw new Error('createTurnCompletionWatcher: hubSessionId required');
+
+  let resolveFn = null;
+  let settled = false;
+  let t1Timer = null;
+  let t2Timer = null;
+  let onTurnComplete = null;
+  let onTurnError = null;
+
+  // patch-after-settle 状态（2026-05-03）
+  let patchListener = null;
+  let patchWindowTimer = null;
+  let settledText = '';
+  let patchCancelled = false;
+
+  const cleanup = () => {
+    if (t1Timer) { clearTimeout(t1Timer); t1Timer = null; }
+    if (t2Timer) { clearTimeout(t2Timer); t2Timer = null; }
+    if (onTurnComplete) { transcriptTap.removeListener('turn-complete', onTurnComplete); onTurnComplete = null; }
+    if (onTurnError) { transcriptTap.removeListener('turn-error', onTurnError); onTurnError = null; }
+  };
+
+  const _cleanupPatch = () => {
+    if (patchListener) { transcriptTap.removeListener('turn-complete', patchListener); patchListener = null; }
+    if (patchWindowTimer) { clearTimeout(patchWindowTimer); patchWindowTimer = null; }
+  };
+
+  const settle = (result) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    settledText = result.text || '';
+    // 2026-05-04 codex equiv (Spec S6/B1.7)：partial→final patch 适用范围扩展。
+    //   - status: completed（claude/codex 自动完成）+ manual_extracted（用户先点提取拿 partial，
+    //     codex 后续 task_complete 来时把 final 覆盖回来，否则卡片永久停在 partial）
+    //   - signalSource 白名单加 'task_complete'（codex L1 信号），原 'stop_reason_terminal' /
+    //     'stop_hook' 仍保留（claude 信号源）
+    const PATCHABLE_STATUSES = new Set(['completed', 'manual_extracted']);
+    const PATCHABLE_SIGNAL_SOURCES = new Set(['stop_reason_terminal', 'stop_hook', 'task_complete']);
+    if (PATCHABLE_STATUSES.has(result.status) && onTurnPatched && !patchCancelled) {
+      patchListener = (evt) => {
+        if (evt.hubSessionId !== hubSessionId) return;
+        if (!PATCHABLE_SIGNAL_SOURCES.has(evt.signalSource)) return;
+        if (!evt.text || evt.text === settledText) return;
+        if (evt.text.length <= settledText.length) return;
+        try {
+          // patch 后状态统一标 'completed'：partial 是过渡，final 才是真完成
+          onTurnPatched({ sid: hubSessionId, label, text: evt.text, status: 'completed' });
+          settledText = evt.text;  // 仅成功后更新基线（spec 防 silent failure）
+        } catch (e) {
+          console.warn('[watcher] onTurnPatched threw:', e && e.message);
+          // 不更新 settledText——下次更长 emit 仍可重试此 patch
+          // 同 text 会被 transcriptTap.emit 内部 lastText 比对吞掉，不会风暴
+        }
+      };
+      transcriptTap.on('turn-complete', patchListener);
+      patchWindowTimer = setTimeout(_cleanupPatch, patchWindowMs);
+      if (patchWindowTimer.unref) patchWindowTimer.unref();
+    }
+    if (resolveFn) resolveFn(result);
+  };
+
+  return {
+    /**
+     * 启动监听 + 定时器，返回 settle 后的 result 对象。
+     * @returns {Promise<{
+     *   sid: string,
+     *   label: string,
+     *   status: 'completed' | 'errored' | 'manual_extracted' | 'absent',
+     *   text: string,
+     *   signalSource?: string,
+     *   completedAt?: number,
+     *   reason?: string,
+     * }>}
+     */
+    wait() {
+      if (settled) return Promise.resolve({ sid: hubSessionId, label, status: 'absent', text: '' });
+
+      return new Promise((resolve) => {
+        resolveFn = resolve;
+
+        onTurnComplete = (evt) => {
+          if (evt.hubSessionId !== hubSessionId) return;
+          settle({
+            sid: hubSessionId,
+            label,
+            status: 'completed',
+            text: evt.text || '',
+            signalSource: evt.signalSource || 'unknown',
+            completedAt: evt.completedAt || Date.now(),
+          });
+        };
+
+        onTurnError = (evt) => {
+          if (evt.hubSessionId !== hubSessionId) return;
+          settle({
+            sid: hubSessionId,
+            label,
+            status: 'errored',
+            text: '',
+            reason: evt.reason || 'unknown',
+          });
+        };
+
+        transcriptTap.on('turn-complete', onTurnComplete);
+        transcriptTap.on('turn-error', onTurnError);
+
+        // 软提醒计时器：触发后**不 settle**，仅通知调用方"这家还在等"。
+        t1Timer = setTimeout(() => {
+          if (settled) return;
+          try { onSoftAlert('t1'); } catch (e) { console.warn('[watcher] onSoftAlert t1 throw:', e.message); }
+        }, softAlertT1Ms);
+        t2Timer = setTimeout(() => {
+          if (settled) return;
+          try { onSoftAlert('t2'); } catch (e) { console.warn('[watcher] onSoftAlert t2 throw:', e.message); }
+        }, softAlertT2Ms);
+      });
+    },
+
+    /**
+     * 用户在 UI 点"一键提取"——绕过完成检测，直接以传入文本 settle。
+     * 文本由调用方先调 transcriptTap.extractLatestGeminiTurn() 拿到。
+     */
+    manualExtract(text) {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'manual_extracted',
+        text: text || '',
+        signalSource: 'manual',
+      });
+    },
+
+    /**
+     * Automatic transcript fallback for providers whose completion event may be
+     * missed even though the final answer is already persisted.
+     */
+    completeFromTranscript(text, signalSource = 'auto_extract') {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'completed',
+        text: text || '',
+        signalSource,
+        completedAt: Date.now(),
+      });
+    },
+
+    /**
+     * 用户跳过本家——下游 prompt 构建器会过滤这家，不引用其内容。
+     */
+    skip() {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'absent',
+        text: '',
+      });
+    },
+
+    /**
+     * 抢占式结算（2026-06-24 道雪）：用户在本轮还没答完时就发了下一轮 —— 立即把
+     *   这家「未完成的旧轮」结算掉，让 dispatcher 的 Promise.allSettled 立刻 resolve、
+     *   串行队列放行新轮，不再因卡死的 AI 无限期挂起。
+     *   状态 'superseded'（被新问题覆盖），空文本 —— 下游 prompt 构建器按 content
+     *   过滤，自然不把这家的半截回答喂给其他队友（用户确认：直接丢弃）。
+     *   不进 patch 窗口（superseded 不在 PATCHABLE_STATUSES）：旧轮已废弃，CLI 后续
+     *   吐的收尾内容不该再回填这条被覆盖的记录。
+     */
+    supersede() {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'superseded',
+        text: '',
+      });
+    },
+
+    /**
+     * P1 钩子：PTY 子进程退出时由 main.js 调用，作为 L2 完成信号。
+     *   exitCode === 0 视为"自然退出但无 L1 信号"→ completed（兜底，无文本）；
+     *   exitCode !== 0 / signal 视为 errored。
+     *   P0 阶段不调用此方法；watcher 暴露此 API 是为 commit 6（P1-1）预埋。
+     */
+    markProcessExit(exitInfo) {
+      const { code, signal } = exitInfo || {};
+      if (settled) return;
+      if (code === 0 && !signal) {
+        settle({
+          sid: hubSessionId,
+          label,
+          status: 'completed',
+          text: '',
+          signalSource: 'process_exit_clean',
+          completedAt: Date.now(),
+        });
+      } else {
+        settle({
+          sid: hubSessionId,
+          label,
+          status: 'errored',
+          text: '',
+          reason: `pty exit code=${code} signal=${signal || 'none'}`,
+        });
+      }
+    },
+
+    markErrored(reason = 'unknown') {
+      settle({
+        sid: hubSessionId,
+        label,
+        status: 'errored',
+        text: '',
+        reason,
+      });
+    },
+
+    isSettled() { return settled; },
+
+    cancelPatch() {
+      patchCancelled = true;
+      _cleanupPatch();
+    },
+  };
+}
+
+module.exports = {
+  createTurnCompletionWatcher,
+  // 重新导出常量，让 main.js / 测试可以从单一入口拿
+  SOFT_ALERT_T1_MS: DEFAULT_T1_MS,
+  SOFT_ALERT_T2_MS: DEFAULT_T2_MS,
+};

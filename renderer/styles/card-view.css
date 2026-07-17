@@ -1,0 +1,939 @@
+/* === Spec 1 v0.9.0 · 消息层 === */
+.msg-overlay {
+  position: absolute;
+  /* 留出顶部 43px 给 .terminal-header（含 zoom A−/A+ + close ✕ 按钮）+ 底部 60px 给输入框 */
+  top: 43px; left: 0; right: 0; bottom: 60px;
+  overflow-y: auto;
+  background: var(--bg-primary);
+  padding: 12px 16px;
+  z-index: 50;
+  font-family: "Inter", -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--turn-body-fg);
+}
+.msg-overlay.hidden { display: none; }
+
+/* 视图切换按钮(右上角浮) — right offset 避开分支、备忘、zoom (A−/A+) 与 close(✕) */
+/* header actions 约 180px，view-toggle right offset 取 220px 留出约 40px buffer */
+.view-toggle {
+  position: absolute;
+  top: 8px; right: 220px;
+  z-index: 100;
+  display: flex;
+  gap: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.view-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.view-toggle-btn.active {
+  background: var(--ui-purple-1);
+  color: white;
+}
+
+/* AI logo 通用样式（Toolbar dropdown 用） */
+.ai-logo {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-right: 8px;
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  flex-shrink: 0;
+}
+.logo-claude    { background-image: url('assets/ai-logos/claude.svg'); }
+.logo-gemini    { background-image: url('assets/ai-logos/gemini.svg'); }
+.logo-codex     { background-image: url('assets/ai-logos/codex.svg'); }
+.logo-deepseek  { background-image: url('assets/ai-logos/deepseek.svg'); }
+.logo-powershell{ background-image: url('assets/ai-logos/powershell.svg'); }
+
+/* === Sidebar tree (meeting + child sub-sessions) === */
+/* The expand-arrow toggles whether a meeting's sub-sessions are listed below
+   it as indented children. Click on the arrow toggles; click anywhere else
+   on the row opens the meeting itself. */
+.session-item.meeting {
+  border-left-color: var(--accent, #6366f1);
+}
+.session-item.meeting .expand-arrow {
+  display: inline-block;
+  width: 12px;
+  margin-right: 4px;
+  color: var(--text-muted, #8b949e);
+  cursor: pointer;
+  transition: transform 180ms ease;
+  user-select: none;
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: middle;
+}
+.session-item.meeting.expanded .expand-arrow {
+  transform: rotate(90deg);
+}
+.session-item.meeting .expand-arrow:hover {
+  color: var(--text-primary, #f0f6fc);
+}
+
+/* Phase 8(2026-05-05 道雪): AI 群聊项迷你跳转按钮 — 折叠/展开态都显示, 替代旧 "N 个子会话" 文字 */
+.session-mini-jumps {
+  display: flex; gap: 6px;
+  padding-left: 22px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+/* 2026-05-31 道雪：群聊场景每个 mini-jump 按钮右侧贴一个 Ctx% 小标签，需要 cell 容器才能让它们成对排版 */
+.meeting-parent-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding-left: 22px;
+  margin-top: 6px;
+  color: var(--text-muted, #8b949e);
+  font-size: 11px;
+}
+.meeting-parent-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border: 1px solid rgba(139, 148, 158, 0.18);
+  border-radius: 999px;
+  background: rgba(139, 148, 158, 0.06);
+  white-space: nowrap;
+}
+.mini-jump-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.mini-jump-ctx {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 2px;
+  color: var(--ink-soft, #8b949e);
+  white-space: nowrap;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.mini-jump-ctx.warn   { color: #f5a623; }
+.mini-jump-ctx.danger { color: #f87171; }
+.mini-jump-btn {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid transparent;
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: transform .15s ease-out, border-color .15s;
+}
+.mini-jump-btn img {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  display: block;
+  object-fit: cover;
+}
+.mini-jump-btn.group img {
+  object-fit: contain;
+  background: #fff;
+  padding: 4px;
+  box-sizing: border-box;
+}
+.mini-jump-btn:hover {
+  transform: scale(1.1);
+}
+.mini-jump-btn.active {
+  border-color: var(--accent, #58a6ff);
+  box-shadow: 0 0 0 2px rgba(88,166,255,0.25);
+}
+.mini-jump-status-dot {
+  position: absolute;
+  bottom: -1px; right: -1px;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-secondary, #161b22);
+  box-sizing: content-box;
+}
+.mini-jump-status-dot.mini-st-ready    { background: #56d364; }
+.mini-jump-status-dot.mini-st-thinking { background: #f5d76e; animation: mini-st-pulse 1.5s ease-in-out infinite; }
+.mini-jump-status-dot.mini-st-init     { background: #6e7681; }
+.mini-jump-status-dot.mini-st-dormant  { background: #8b949e; border-radius: 2px; }
+.mini-jump-status-dot.mini-st-error    { background: #f87171; }
+@keyframes mini-st-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* 2026-06-28 道雪：群聊 mini-jump 用 AI 类型文字（deepseek/claude/codex…）代替圆形头像，省空间。
+   只作用于 .group（群聊）；非群聊 meeting 的圆形头像样式（上方 .mini-jump-btn）不受影响。 */
+.mini-jump-btn.group {
+  width: auto; height: auto;
+  border-radius: 5px;
+  border-width: 1px;
+  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.mini-jump-btn.group:hover { transform: none; background: rgba(128,128,128,0.16); }
+.mini-jump-text {
+  font-size: 11px;
+  color: var(--text-secondary, #8b949e);
+  white-space: nowrap;
+  line-height: 1;
+}
+/* 文字模式下状态点改成行内小圆点，排到文字前（绝对定位的右下角贴法只适合圆头像） */
+.mini-jump-btn.group .mini-jump-status-dot {
+  position: static;
+  order: -1;
+  width: 6px; height: 6px;
+  border: none;
+  flex: none;
+}
+
+/* Child sub-session rows under an expanded meeting. Smaller and indented
+   to convey hierarchy without losing the click target. */
+.session-item.child {
+  padding: 6px 10px 6px 26px;
+  margin: 1px 4px 1px 12px;
+  border-left: 2px solid var(--color-border, #30363d);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.015);
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: background 120ms ease, border-left-color 120ms ease;
+  position: relative;
+}
+.session-item.child::before {
+  content: none;  /* override the .session-item::before glow used on parents */
+}
+.session-item.child:hover {
+  background: rgba(88, 166, 255, 0.06);
+  border-left-color: var(--accent, #58a6ff);
+}
+.session-item.child.selected {
+  background: rgba(88, 166, 255, 0.14);
+  border-left-color: var(--accent, #58a6ff);
+}
+.session-item.child .ai-logo {
+  width: 14px;
+  height: 14px;
+  margin-right: 0;
+  flex-shrink: 0;
+}
+.session-item.child .child-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary, #e6edf3);
+}
+.session-item.child .child-model-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--bg-tertiary, #1f2630);
+  color: var(--text-muted, #8b949e);
+  flex-shrink: 0;
+}
+
+/* === Spec 1 v0.9.0 · 紫色滚动条 === */
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+*:hover::-webkit-scrollbar-thumb { background: rgba(139, 92, 246, 0.25); }
+*::-webkit-scrollbar-thumb:hover { background: var(--ui-purple-glow); }
+
+/* 排除 xterm 内部滚动条(它有自己的 viewport,会冲突) */
+.xterm *::-webkit-scrollbar,
+.xterm-viewport::-webkit-scrollbar {
+  width: auto; height: auto;
+}
+.xterm *::-webkit-scrollbar-thumb,
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: revert;
+}
+
+/* === Spec 1 v0.9.0 · turn 卡片 === */
+.turn-card {
+  background: var(--turn-bg-assistant);
+  padding: var(--turn-padding);
+  border-radius: var(--turn-radius);
+  margin-bottom: var(--turn-gap);
+  display: flex;
+  gap: 10px;
+}
+.turn-card.user {
+  background: var(--turn-bg-user);
+  border-left: 3px solid var(--ui-purple-1);
+}
+.turn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.turn-who {
+  color: var(--ui-purple-2);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.turn-card.user .turn-who { color: var(--ui-purple-3); }
+.turn-meta {
+  color: var(--turn-meta-fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.turn-body {
+  margin-top: 4px;
+  color: var(--turn-body-fg);
+}
+
+/* === Spec 2 · S8: thinking 折叠块 (assistant only, default collapsed) === */
+.turn-thinking {
+  margin-top: 6px;
+  margin-bottom: 4px;
+  padding: 6px 10px;
+  background: var(--bg-secondary);
+  border-left: 2px solid var(--text-muted);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.turn-thinking-summary {
+  color: var(--text-muted);
+  font-style: italic;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+  outline: none;
+}
+.turn-thinking-summary:hover { color: var(--ui-purple-2); }
+.turn-thinking-body {
+  margin-top: 6px;
+  padding: 4px 6px 2px;
+  color: var(--turn-body-fg);
+  font-style: italic;
+  opacity: 0.85;
+  line-height: 1.55;
+}
+
+/* === Spec 1 v0.9.0 · 工具调用块 === */
+.tc {
+  background: var(--tool-call-bg);
+  border: 1px solid var(--tool-call-border);
+  border-radius: 6px;
+  margin: 8px 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+.tc-head {
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.tc-name { color: var(--tool-call-name); font-weight: 600; }
+.tc-meta { color: var(--turn-meta-fg); font-size: 10px; flex-shrink: 0; }
+.tc-ok { color: var(--tool-call-ok); }
+.tc-fail { color: var(--tool-call-fail); }
+.tc-out {
+  margin: 0;
+  padding: 4px 10px 8px;
+  color: #a1a1aa;
+  border-top: 1px solid var(--tool-call-border);
+  /* 2026-06-21 道雪：原 white-space:pre 不换行，超长单行(路径/JSON)横向溢出出横滚条。
+     改 pre-wrap + break-word，与 .tc-result 一致，纵向滚动即可。 */
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 10.5px;
+  line-height: 1.45;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.tc-toggle {
+  color: var(--tool-call-toggle);
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 10.5px;
+  border-top: 1px solid var(--tool-call-border);
+  user-select: none;
+}
+.tc-toggle:hover { background: rgba(167, 139, 250, 0.05); }
+
+/* === Spec 3 · W7 头部 metadata pills === */
+.turn-meta-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-left: 4px;
+}
+.pill {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--tool-call-border);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  color: var(--turn-meta-fg);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pill-tool { color: var(--tool-call-name); border-color: rgba(251, 191, 36, 0.25); }
+.pill-token { color: var(--ui-purple-3); border-color: rgba(196, 181, 253, 0.25); }
+.pill-ctx { color: var(--ui-purple-2); border-color: rgba(167, 139, 250, 0.25); }
+.pill-time { color: var(--accent-green); border-color: rgba(63, 185, 80, 0.25); }
+
+/* === Spec 3 · UI 方案 E · 工具簇折叠 === */
+.tc-cluster {
+  background: var(--tool-call-bg);
+  border: 1px solid var(--tool-call-border);
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.tc-cluster-head {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: var(--ui-purple-2);
+  user-select: none;
+}
+.tc-cluster-head::-webkit-details-marker { display: none; }
+.tc-cluster-head::before { content: '▸ '; color: var(--ui-purple-2); }
+.tc-cluster[open] .tc-cluster-head::before { content: '▾ '; }
+.tc-cluster-head:hover { color: var(--ui-purple-3); }
+.tc-cluster-list {
+  padding: 0 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tc-row {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+.tc-row-name { color: var(--tool-call-name); font-weight: 600; flex-shrink: 0; }
+.tc-row-cmd { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Spec 3 · W9: 工具 stdout 折叠（与 PTY 视图对齐） */
+.tc-row-with-result {
+  display: block;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+}
+.tc-row-with-result summary.tc-row-head {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+}
+.tc-row-with-result summary.tc-row-head::-webkit-details-marker { display: none; }
+.tc-row-with-result summary.tc-row-head::before { content: '▸'; color: var(--ui-purple-2); margin-right: 4px; }
+.tc-row-with-result[open] summary.tc-row-head::before { content: '▾'; }
+.tc-row-with-result.tc-row-err summary.tc-row-head { background: rgba(248, 113, 113, 0.06); }
+.tc-row-errbadge { color: var(--accent-red); font-size: 10px; margin-left: auto; }
+.tc-result {
+  margin: 0;
+  padding: 6px 10px;
+  background: #08070d;
+  color: #b1aebf;
+  border-top: 1px solid var(--tool-call-border);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+  border-radius: 0 0 4px 4px;
+}
+.tc-result-err { color: #fca5a5; border-left: 2px solid var(--accent-red); }
+
+/* === Spec 4 · 工具返回预览（按钮 + JSON 高亮 + 长内容折叠） === */
+/* summary 右侧操作区（保持 baseline 对齐，不挤压 cmd 文字） */
+.tc-row-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.tc-row-preview-btn {
+  background: rgba(124, 99, 255, 0.12);
+  color: var(--ui-purple-2);
+  border: 1px solid rgba(124, 99, 255, 0.28);
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-family: inherit;
+  padding: 1px 8px;
+  cursor: pointer;
+  line-height: 1.55;
+  user-select: none;
+  transition: background-color 0.15s, color 0.15s;
+}
+.tc-row-preview-btn:hover {
+  background: rgba(124, 99, 255, 0.22);
+  color: var(--ui-purple-3);
+}
+.tc-row-with-result.tc-row-err .tc-row-preview-btn {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.3);
+  color: var(--accent-red);
+}
+
+/* 结果区外壳 — 包住 toolbar + pre，统一边角和背景 */
+.tc-result-wrap {
+  background: #08070d;
+  border-top: 1px solid var(--tool-call-border);
+  border-radius: 0 0 4px 4px;
+  overflow: hidden;
+}
+.tc-result-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(124, 99, 255, 0.04);
+  border-bottom: 1px solid rgba(124, 99, 255, 0.08);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+}
+.tc-result-meta {
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.tc-result-copy,
+.tc-result-expand {
+  background: transparent;
+  color: var(--ui-purple-2);
+  border: 1px solid rgba(124, 99, 255, 0.28);
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-family: inherit;
+  padding: 1px 7px;
+  cursor: pointer;
+  line-height: 1.55;
+  user-select: none;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.tc-result-copy { margin-left: auto; }
+.tc-result-copy:hover,
+.tc-result-expand:hover {
+  background: rgba(124, 99, 255, 0.16);
+  color: var(--ui-purple-3);
+}
+.tc-result-copy.copied {
+  background: rgba(52, 199, 89, 0.18);
+  border-color: rgba(52, 199, 89, 0.5);
+  color: #6ee7a3;
+}
+
+/* 被 .tc-result-wrap 包住后取消 pre 自身的边框圆角，由 wrap 统一控制 */
+.tc-result-wrap .tc-result {
+  border-top: none;
+  border-radius: 0;
+}
+
+/* 超长 result 折叠：默认 180px + 底部渐变遮罩（暗示还有内容） */
+.tc-result.tc-result-foldable.is-folded {
+  max-height: 180px;
+  overflow: hidden;
+  position: relative;
+}
+.tc-result.tc-result-foldable.is-folded::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 48px;
+  background: linear-gradient(to bottom, rgba(8, 7, 13, 0), rgba(8, 7, 13, 0.95));
+  pointer-events: none;
+}
+.tc-result.tc-result-foldable:not(.is-folded) {
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* JSON 语法高亮 token 配色（适配 #08070d 深底） */
+.tc-result.is-json .token.property { color: #79c0ff; }
+.tc-result.is-json .token.string { color: #a5d6ff; }
+.tc-result.is-json .token.number { color: #ffa657; }
+.tc-result.is-json .token.boolean,
+.tc-result.is-json .token.null { color: #ff7b72; }
+.tc-result.is-json .token.punctuation { color: #8b949e; }
+.tc-result.is-json .token.operator { color: #d2a8ff; }
+
+/* === Spec 3 · W15 v2 (2026-05-10): streaming indicator
+   旧版是 turn-card 之间的大 banner（"Claude 还在生成更多回复…" + 3 dot 跳动），
+   实测视觉打扰偏多。新版改成紧凑 spinner，由 JS 优先 append 到最后一个
+   assistant turn-card 的 turn-head 末尾，hover 看具体文案；cardCount=0 时
+   fallback 到 overlay 顶部仍紧凑显示。
+*/
+.streaming-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  margin: 0 0 0 6px;
+  background: transparent;
+  border: none;
+  border-left: none;
+  color: var(--ui-purple-2);
+  vertical-align: middle;
+}
+.streaming-indicator .spinner-icon {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: streaming-spin 0.8s linear infinite;
+  opacity: 0.65;
+  flex-shrink: 0;
+}
+@keyframes streaming-spin { to { transform: rotate(360deg); } }
+/* cardCount=0 fallback：indicator 直接挂 overlay 时给点视觉余量（原 banner 极简化） */
+.msg-overlay > .streaming-indicator {
+  display: flex;
+  margin: 12px 0 4px 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  font-style: italic;
+  opacity: 0.75;
+}
+.msg-overlay > .streaming-indicator::after {
+  content: attr(data-label);
+  color: currentColor;
+  font-size: 12px;
+  font-style: italic;
+  margin-left: 6px;
+}
+/* === Spec 3 · 长 markdown 文本默认折叠 === */
+.turn-body.body-foldable.folded {
+  max-height: 400px;
+  overflow: hidden;
+  position: relative;
+  -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 78%, transparent 100%);
+}
+.body-fold-toggle {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 4px 12px;
+  font-size: 11.5px;
+  color: var(--ui-purple-2);
+  cursor: pointer;
+  border-radius: 4px;
+  background: rgba(167, 139, 250, 0.06);
+  user-select: none;
+  transition: background 0.15s;
+}
+.body-fold-toggle:hover { background: rgba(167, 139, 250, 0.14); color: var(--ui-purple-3); }
+
+/* === Spec 3 · markdown 表格样式 (此前完全裸样式 → 表格"散乱") === */
+.turn-body table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 13px;
+  width: auto;
+  max-width: 100%;
+  border: 1px solid var(--tool-call-border);
+}
+.turn-body th,
+.turn-body td {
+  border: 1px solid var(--tool-call-border);
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.turn-body th {
+  background: var(--ui-purple-tint-bg);
+  color: var(--ui-purple-3);
+  font-weight: 600;
+}
+.turn-body tbody tr:nth-child(even) td {
+  background: rgba(196, 181, 253, 0.04);
+}
+.turn-body table code {
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.turn-body a.rt-file-link {
+  color: var(--accent-blue, #58a6ff);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.turn-body a.rt-file-link:hover {
+  color: #79c0ff;
+}
+
+/* === Spec 1 v0.9.0 · 代码块 (D2) === */
+.code-block-wrap {
+  position: relative;
+  margin: 10px 0;
+}
+.code-block-wrap pre {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--tool-call-bg) !important;
+  border: 1px solid var(--tool-call-border);
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+.code-copy {
+  position: absolute;
+  top: 6px; right: 6px;
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: var(--ui-purple-3);
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  font-family: inherit;
+}
+.code-block-wrap:hover .code-copy { opacity: 1; }
+.code-copy:hover { background: rgba(139, 92, 246, 0.3); }
+.code-toggle {
+  background: var(--tool-call-bg);
+  border: 1px solid var(--tool-call-border);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  padding: 6px 10px;
+  color: var(--ui-purple-2);
+  cursor: pointer;
+  font-size: 10.5px;
+  font-family: ui-monospace, monospace;
+  user-select: none;
+}
+.code-toggle:hover { background: rgba(167, 139, 250, 0.05); }
+
+/* prism-tomorrow 紫调 override */
+.token.keyword { color: var(--ui-purple-3) !important; }
+.token.function { color: #fbbf24 !important; }
+.token.string { color: #34d399 !important; }
+.token.comment { color: #6b7280 !important; font-style: italic; }
+.token.operator { color: #c4b5fd !important; }
+
+/* === Spec 1 v0.9.0 · 头像 (D4) === */
+.turn-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: var(--bg-tertiary);
+  overflow: hidden;
+}
+.turn-avatar.av-user { background: var(--ui-purple-tint-bg); }
+.turn-avatar.av-letter {
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, var(--ui-purple-1), var(--ui-purple-2));
+}
+.turn-content { flex: 1; min-width: 0; }
+
+/* === Spec 1 v0.9.0 · D5 操作按钮 === */
+.turn-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.turn-card:hover .turn-actions { opacity: 1; }
+.ta-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1;
+}
+.ta-btn:hover {
+  border-color: var(--ui-purple-1);
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--ui-purple-3);
+}
+
+/* === Spec 2 placeholder (visible on large screens) === */
+.msg-overlay-placeholder {
+  color: var(--ui-purple-3);
+  font-size: 18px;
+  padding: 60px 24px;
+  text-align: center;
+  font-style: italic;
+  line-height: 1.6;
+  opacity: 0.85;
+}
+.msg-overlay-placeholder a {
+  color: var(--ui-purple-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* =========================================================================
+   2026-06-28 道雪 · 卡片视图皮肤 v1：深空灰 + 气泡 + 紧凑（合并方案 01+09+10）
+   全部 scope 在 .msg-overlay 子树，不影响 sidebar / 群聊 / PTY。
+   去紫核心：在 .msg-overlay 局部重定义 --ui-purple-* / 卡片专用变量，卡片内
+   所有 var() 引用一键改色；少量硬编码紫单独覆盖。
+   ========================================================================= */
+.msg-overlay {
+  background: #161618;
+  --ui-purple-1: #3a3a3c;
+  --ui-purple-2: #0a84ff;
+  --ui-purple-3: #5ac8fa;
+  --ui-purple-tint-bg: #2c2c2e;
+  --ui-purple-glow: rgba(10, 132, 255, 0.4);
+  --turn-bg-assistant: transparent;
+  --turn-bg-user: transparent;
+  --turn-meta-fg: #8e8e93;
+  --turn-body-fg: #e5e5ea;
+  --tool-call-name: #d6b15e;
+}
+
+/* 卡片容器：透明 + 紧凑 */
+.msg-overlay .turn-card {
+  background: transparent;
+  padding: 0;
+  margin-bottom: 11px;
+  gap: 8px;
+  align-items: flex-start;
+}
+.msg-overlay .turn-card.user {
+  flex-direction: row-reverse;
+  border-left: none;
+}
+
+/* 头像缩小 24px，去紫 */
+.msg-overlay .turn-avatar { width: 24px; height: 24px; font-size: 11px; }
+.msg-overlay .turn-avatar.av-letter {
+  background: #3a3a3c; color: #e5e5ea; font-size: 10px;
+}
+.msg-overlay .turn-card:not(.user) .turn-avatar.av-letter {
+  background: #2c2c2e; color: #7fb2ff;
+}
+
+/* 内容列：左右气泡对齐 */
+.msg-overlay .turn-content { display: flex; flex-direction: column; min-width: 0; }
+.msg-overlay .turn-card.user .turn-content { align-items: flex-end; }
+.msg-overlay .turn-card:not(.user) .turn-content { align-items: flex-start; }
+
+/* 名字 / 时间行：紧凑、去紫、去大写 */
+.msg-overlay .turn-head {
+  gap: 6px; margin: 0 3px 3px; align-items: baseline; flex-wrap: wrap;
+}
+.msg-overlay .turn-card.user .turn-head { flex-direction: row-reverse; }
+.msg-overlay .turn-who {
+  color: #d6d6da; font-size: 11px; font-weight: 600;
+  letter-spacing: 0; text-transform: none;
+}
+.msg-overlay .turn-meta { font-size: 10.5px; }
+
+/* 气泡本体（.turn-body 只含对话正文） */
+.msg-overlay .turn-body {
+  background: #2c2c2e; color: #e5e5ea;
+  padding: 7px 11px; border-radius: 13px 13px 13px 4px;
+  margin-top: 0; max-width: 86%; width: fit-content;
+  font-size: 13px; line-height: 1.5;
+}
+.msg-overlay .turn-card.user .turn-body {
+  background: #0a84ff; color: #fff; border-radius: 13px 13px 4px 13px;
+}
+.msg-overlay .turn-body.body-foldable.folded {
+  -webkit-mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 72%, transparent 100%);
+}
+
+/* 气泡下方附属：工具簇 + 徽章 + thinking */
+.msg-overlay .turn-content > .tc-cluster,
+.msg-overlay .turn-content > .turn-meta-pills,
+.msg-overlay .turn-content > .turn-thinking {
+  align-self: flex-start; max-width: 90%;
+}
+.msg-overlay .turn-card.user .turn-content > .turn-meta-pills { align-self: flex-end; }
+.msg-overlay .turn-content > .tc-cluster { margin: 5px 0 0; }
+.msg-overlay .turn-content > .turn-meta-pills { margin: 5px 3px 0; }
+.msg-overlay .turn-content > .turn-thinking { margin: 4px 0 0; }
+
+/* 徽章降噪：统一灰描边、去四色 */
+.msg-overlay .pill,
+.msg-overlay .pill-tool,
+.msg-overlay .pill-token,
+.msg-overlay .pill-ctx,
+.msg-overlay .pill-time {
+  background: transparent; border-color: #3a3a3c; color: #8e8e93; font-size: 10px;
+}
+
+/* 残留硬编码紫 → 蓝 / 中性 */
+.msg-overlay .body-fold-toggle { background: rgba(10, 132, 255, 0.08); }
+.msg-overlay .body-fold-toggle:hover { background: rgba(10, 132, 255, 0.16); }
+.msg-overlay .code-copy {
+  background: rgba(10, 132, 255, 0.15); border-color: rgba(10, 132, 255, 0.3); color: #7fb2ff;
+}
+.msg-overlay .code-copy:hover { background: rgba(10, 132, 255, 0.3); }
+.msg-overlay .ta-btn:hover {
+  border-color: #3a3a3c; background: rgba(255, 255, 255, 0.06); color: #e5e5ea;
+}
+.msg-overlay .tc-row-preview-btn,
+.msg-overlay .tc-result-copy,
+.msg-overlay .tc-result-expand {
+  background: rgba(10, 132, 255, 0.1); border-color: rgba(10, 132, 255, 0.28); color: #7fb2ff;
+}
+.msg-overlay:hover::-webkit-scrollbar-thumb { background: rgba(142, 142, 147, 0.4); }
+
+/* header：视图切换高亮去紫换蓝 */
+.view-toggle-btn.active { background: #0a84ff; }

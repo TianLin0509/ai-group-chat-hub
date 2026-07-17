@@ -1,0 +1,7 @@
+/* Meeting room styles split manifest. Keep import order identical to the former meeting-room.css. */
+@import url('./styles/meeting-room-base.css');
+@import url('./styles/meeting-room-chat-flow.css');
+@import url('./styles/meeting-room-toolbar-input.css');
+@import url('./styles/meeting-room-cards.css');
+@import url('./styles/meeting-room-timeline-toolbar.css');
+@import url('./styles/meeting-room-card-modes.css');

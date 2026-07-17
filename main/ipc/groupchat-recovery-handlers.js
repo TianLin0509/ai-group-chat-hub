@@ -1,0 +1,226 @@
+'use strict';
+
+const { isCodexCliKind } = require('../../core/ai-kinds.js');
+
+function registerGroupchatRecoveryIpc(ipcMain, deps) {
+  const {
+    getHubDataDir,
+    getActiveWatchers,
+    groupchat,
+    groupChatWatcher,
+    logger = console,
+    meetingManager,
+    sendToRenderer,
+    sessionManager,
+    transcriptTap,
+  } = deps;
+
+  ipcMain.handle('groupchat-manual-extract', async (_e, { meetingId, sid, sincePromptTs, turnNum } = {}) => {
+    if (!sid) return { ok: false, reason: 'missing_sid' };
+
+    const session = sessionManager.getSession(sid);
+    const kind = session?.kind || 'unknown';
+
+    // 2026-07-12 道雪：轮次窗口改由 orchestrator 状态推导，不再信 renderer 的
+    //   _gcTurnStartTs（那是"当前轮"的开始时间，对旧轮重提取完全错位；Hub 重启后是 0）。
+    //   u{n}.createdAt 做下界、u{n+1}（该轮之后首条用户消息）做上界。
+    const requestedTurn = Number.isFinite(Number(turnNum)) ? Number(turnNum) : null;
+    let orch = null;
+    if (meetingId) {
+      try {
+        const meeting = meetingManager.getMeeting(meetingId);
+        if (meeting) orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+      } catch (err) {
+        logger.warn('[manual-extract] orchestrator load failed:', err && err.message);
+      }
+      // 二轮加固（多方审查）：群聊调用拿不到 orchestrator 时诚实失败——旧行为会静默
+      //   绕过旧轮拒绝/窗口推导，最后走 text_only 假成功（UI"已同步"但气泡不变）。
+      if (!orch) {
+        return { ok: false, reason: 'meeting_state_unavailable', detail: '群聊状态不可用（meeting 不存在或状态文件读取失败），无法定位轮次写回。' };
+      }
+    }
+    const readCurrentTurn = () => (orch && Number.isFinite(orch.state.currentTurn) && orch.state.currentTurn > 0
+      ? orch.state.currentTurn : null);
+    let effectiveSince = Math.max(0, Number(sincePromptTs) || 0);
+    let untilTs = null;
+    let isLatestTurn = true;
+    const orchCurrentTurn = readCurrentTurn();
+    if (orch && requestedTurn !== null) {
+      const msgs = Array.isArray(orch.state.messages) ? orch.state.messages : [];
+      const userMsg = msgs.find(m => m && m.id === `u${requestedTurn}` && m.role === 'user');
+      if (userMsg && Number.isFinite(userMsg.createdAt)) effectiveSince = userMsg.createdAt;
+      const nextUser = msgs.find(m => m && m.role === 'user' && Number(m.turnNum) > requestedTurn);
+      if (nextUser && Number.isFinite(nextUser.createdAt)) untilTs = nextUser.createdAt;
+      if (orchCurrentTurn !== null && requestedTurn < orchCurrentTurn) isLatestTurn = false;
+      // 二轮加固：要精确重提取"旧轮"但该轮用户消息缺失（被回滚/旧 schema 无 turnNum）
+      //   → 无法建立轮次窗口，提取必然错位，诚实拒绝。当前轮保留宽松兜底（语义本就是"抓最新"）。
+      if (!isLatestTurn && !userMsg) {
+        return {
+          ok: false,
+          reason: 'turn_window_unavailable',
+          detail: `第 ${requestedTurn} 轮的用户消息不在群聊记录中，无法建立提取窗口（可能已被回滚或为旧版本数据）。旧轮内容请点「原文」核对。`,
+        };
+      }
+    }
+
+    // 非 Codex 后端只能读"最新回答"，对旧轮重提取会拿到最新轮内容 → 张冠李戴。
+    //   诚实拒绝，提示用户用「原文」核对旧轮，而不是静默写错数据。
+    if (!isLatestTurn && !isCodexCliKind(kind)) {
+      return {
+        ok: false,
+        reason: 'old_turn_resync_unsupported',
+        detail: `该 AI（kind=${kind}）的 transcript 只能读取最新一轮回答，无法精确重提取第 ${requestedTurn} 轮（会误拿最新轮内容）。旧轮内容请点「原文」核对。`,
+      };
+    }
+
+    let extracted = null;
+    try {
+      extracted = await transcriptTap.extractLatestTurn(sid, effectiveSince, { untilTs });
+    } catch (err) {
+      return { ok: false, reason: 'extract_failed', detail: err.message };
+    }
+    if (!extracted || !extracted.text) {
+      // PTY/streaming 兜底只对"最新轮"有意义：旧轮内容早已不在流式缓冲里。
+      if (isLatestTurn) {
+        try {
+          const fromPty = groupChatWatcher.extractStreamingText(sid, kind);
+          if (fromPty && fromPty.text && fromPty.text.trim().length > 0) {
+            extracted = {
+              text: fromPty.text,
+              source: fromPty.source || 'pty_buffer',
+              extractMode: 'pty_buffer_fallback',
+            };
+          }
+        } catch (err) {
+          logger.warn('[manual-extract] PTY fallback failed:', err && err.message);
+        }
+      }
+    }
+    if (!extracted || !extracted.text) {
+      const extractMode = extracted?.extractMode || null;
+      let detail;
+      if (extractMode === 'no_rollout_bound') {
+        detail = `Codex rollout 文件尚未绑定（kind=${kind}）。可能原因：（a）当天目录 ~/.codex/sessions/<今日>/ 还没新文件；（b）codex spawn 时的 cwd 与 rollout session_meta.cwd 不一致；（c）timestamp 超出绑定窗口 [-10s, +5min]。建议：等 5-10s（codex 通常 spawn 后才写 rollout 首行），或点"🔧 进 shell"看真实 PTY 输出确认 codex 是否真的启动了。`;
+      } else if (extractMode === 'no_task_complete_yet') {
+        detail = `Codex 已绑定 rollout 但${isLatestTurn ? '' : `第 ${requestedTurn} 轮窗口内`} task_complete 事件${isLatestTurn ? '尚未写入' : '未找到'}（kind=${kind}）。可能原因：（a）codex 仍在思考；（b）codex 在等 MCP 工具确认弹窗（如 ai-team team_respond），需要进 shell 点"Allow"；（c）codex 多 task 场景含 3s debounce，最后一个 task 完成后才 emit。建议：点"🔧 进 shell"看 codex 当前是否被 confirm 弹窗阻塞。`;
+      } else {
+        detail = `transcript 中没有可读的 last assistant 内容（kind=${kind}）。可能原因：CLI 还没真正回答 / transcript 路径未绑定 / Stop hook 没触发且 idle-timer 还没到期。建议稍等几秒重试，或点"🔧 进 shell"看真实 PTY 输出。`;
+      }
+      return {
+        ok: false,
+        reason: 'no_content',
+        extractMode,
+        detail,
+      };
+    }
+
+    // watcher settle 只允许作用于"当前进行中的轮"：用户点旧轮的「重新提取」时，
+    //   绝不能把旧轮文本结算进正在飞行的新轮（watcher 劫持 = 新轮答案被旧内容顶掉）。
+    // 二轮加固（多方审查）：currentTurn 在 await extractLatestTurn 之后**重读**——
+    //   提取期间用户可能已发下一轮（抢占式连发），旧快照会把旧轮文本 settle 进新轮 watcher。
+    //   orch 存在但 currentTurn 无效（如投委会 internal 阶段 currentTurn=0）时，带 turnNum
+    //   的请求不放行 watcher（internal watcher 不属于任何编号轮），走 patch 路径。
+    const watcher = getActiveWatchers().get(sid);
+    const freshCurrentTurn = readCurrentTurn();
+    const watcherOwnsRequestedTurn = requestedTurn === null
+      || (freshCurrentTurn !== null ? requestedTurn === freshCurrentTurn : !orch);
+    if (watcher && watcherOwnsRequestedTurn) {
+      watcher.manualExtract(extracted.text);
+      return { ok: true, text: extracted.text, source: extracted.source, mode: 'watcher_settle', extractMode: extracted.extractMode || null };
+    }
+
+    if (meetingId) {
+      try {
+        if (orch) {
+          const turns = Array.isArray(orch.state.turns) ? orch.state.turns : [];
+          const targetTurn = requestedTurn !== null
+            ? turns.find(t => t && t.n === requestedTurn)
+            : turns[turns.length - 1];
+          if (targetTurn) {
+            const patched = orch.patchTurnResult(targetTurn.n, sid, {
+              text: extracted.text,
+              status: 'manual_extracted',
+            });
+            if (patched) {
+              sendToRenderer('groupchat-turn-patched', {
+                meetingId,
+                turnNum: targetTurn.n,
+                sid,
+                charCount: (extracted.text || '').length,
+              });
+              return { ok: true, text: extracted.text, source: extracted.source, mode: 'patch_groupchat_turn', extractMode: extracted.extractMode || null };
+            }
+          }
+          // 群聊调用（带 meetingId）但目标轮不存在/patch 失败：诚实报错。
+          //   旧行为返回 ok:true + mode:'text_only'，UI 显示"已同步"但气泡纹丝不动
+          //   ——用户感知就是"重新提取失败/没反应"。
+          return {
+            ok: false,
+            reason: 'turn_not_found',
+            detail: `提取到 ${extracted.text.length} 字，但第 ${requestedTurn !== null ? requestedTurn : '(最新)'} 轮不在群聊记录中，无法写回。可能该轮已被回滚或状态文件损坏。`,
+          };
+        }
+      } catch (err) {
+        logger.warn('[manual-extract] patch lastTurn failed:', err.message);
+        return { ok: false, reason: 'patch_failed', detail: err.message };
+      }
+    }
+
+    return { ok: true, text: extracted.text, source: extracted.source, mode: 'text_only', extractMode: extracted.extractMode || null };
+  });
+
+  ipcMain.handle('groupchat-resend-prompt', async (_e, { meetingId, sid } = {}) => {
+    if (!meetingId || !sid) return { ok: false, reason: 'invalid_args' };
+    const meeting = meetingManager.getMeeting(meetingId);
+    if (!meeting || !meeting.groupChat) return { ok: false, reason: 'group_chat_not_found' };
+    const orch = groupchat.getOrchestrator(getHubDataDir(), meetingId);
+    // 无条件重发「最新轮用户原始问题」：不依赖会被清空的 _activePrompts，
+    //   整轮结束 / idle 也能发（用户要"点了就发最新轮的问题"，2026-06-19）。
+    //   最新轮号 = state.currentTurn（完成后仍保留），原话存在 messages 的 u{n}。
+    const turnNum = orch.state.currentTurn;
+    if (!turnNum) {
+      return { ok: false, reason: 'no_turn_yet' };
+    }
+    const userMsg = (orch.state.messages || []).find(
+      m => m && m.id === `u${turnNum}` && m.role === 'user'
+    );
+    const promptText = userMsg && userMsg.content;
+    if (!promptText) {
+      return { ok: false, reason: 'no_user_input' };
+    }
+    const session = sessionManager.getSession(sid);
+    const kind = session ? session.kind : 'unknown';
+    try {
+      return await groupChatWatcher.resendCurrentPrompt({
+        sid,
+        kind,
+        prompt: promptText,
+        promptHeader: '',
+        timing: { ENTER_RETRY_GAP_MS: 150, POST_ENTER_VERIFY_MS: 500 },
+      });
+    } catch (err) {
+      logger.error('[groupchat-resend-prompt] threw:', err);
+      return { ok: false, reason: 'exception', detail: err.message };
+    }
+  });
+
+  ipcMain.handle('groupchat-skip-participant', async (_e, { sid } = {}) => {
+    if (!sid) return { ok: false, reason: 'missing sid' };
+    const watcher = getActiveWatchers().get(sid);
+    if (!watcher) return { ok: false, reason: 'not_active' };
+    watcher.skip();
+    return { ok: true };
+  });
+
+  ipcMain.handle('groupchat-resend-participant', async () => {
+    return {
+      ok: false,
+      reason: 'unsupported',
+      detail: 'group chat uses resend-prompt, manual extract, and skip recovery actions',
+    };
+  });
+}
+
+module.exports = {
+  registerGroupchatRecoveryIpc,
+};
