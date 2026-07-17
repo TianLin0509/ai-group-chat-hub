@@ -128,7 +128,12 @@ if (process.env.CLAUDE_HUB_DATA_DIR) {
 // Auto-deploy hook scripts + settings.json config on first launch.
 // Idempotent — skips if already present, never overwrites user's existing hooks.
 // claudeDirPath: target Claude config dir (e.g. ~/.claude or ~/.claude-deepseek)
-function ensureHooksDeployed(claudeDirPath) {
+// opts.hubManaged: true only for Hub-owned isolated config dirs (~/.claude-deepseek).
+// For the user's primary ~/.claude we ONLY add our hooks/statusline — we must never
+// touch their permissionMode or folder-trust state (those change how their daily
+// Claude Code behaves and are not ours to decide).
+function ensureHooksDeployed(claudeDirPath, opts = {}) {
+  const hubManaged = !!opts.hubManaged;
   const claudeDir = claudeDirPath;
   const scriptsDir = path.join(claudeDir, 'scripts');
 
@@ -198,8 +203,9 @@ function ensureHooksDeployed(claudeDirPath) {
     changed = true;
   }
 
-  // Statusline
-  if (!settings.statusLine || !String(settings.statusLine.command || '').includes('claude-hub-statusline')) {
+  // Statusline: only set when the user has none — never overwrite a statusline
+  // the user configured themselves. (Hub-managed isolated dirs always get ours.)
+  if (!settings.statusLine || (hubManaged && !String(settings.statusLine.command || '').includes('claude-hub-statusline'))) {
     settings.statusLine = {
       type: 'command',
       command: `node "${statusJsPath}"`
@@ -207,11 +213,10 @@ function ensureHooksDeployed(claudeDirPath) {
     changed = true;
   }
 
-  // 3. Ensure bypass-permissions — so DeepSeek (and any future Claude-derivative)
-  //    sessions start without folder-trust / permission-confirmation prompts.
-  //    The main ~/.claude dir typically already has this from prior manual setup,
-  //    but ~/.claude-deepseek is a fresh isolated config that needs it seeded.
-  if (!settings.permissionMode || settings.permissionMode !== 'bypassPermissions') {
+  // 3. Ensure bypass-permissions — ONLY for Hub-managed isolated config dirs
+  //    (~/.claude-deepseek), so DeepSeek sessions start without trust prompts.
+  //    Never change permissionMode of the user's primary ~/.claude.
+  if (hubManaged && settings.permissionMode !== 'bypassPermissions') {
     settings.permissionMode = 'bypassPermissions';
     changed = true;
   }
@@ -222,9 +227,9 @@ function ensureHooksDeployed(claudeDirPath) {
     console.log('[群聊] settings.json updated with hook config');
   }
 
-  // 4. Ensure .claude.json project trust — Claude Code 将"信任文件夹"状态
-  //    存在 .claude.json 而非 settings.json。隔离配置(~/.claude-deepseek)缺少
-  //    主配置(~/.claude)的历史信任记录，需要每次启动检查并修复。
+  // 4. Ensure .claude.json project trust — ONLY for Hub-managed isolated dirs.
+  //    Folder-trust of the user's primary ~/.claude is the user's own decision.
+  if (!hubManaged) return;
   const statePath = path.join(claudeDir, '.claude.json');
   try {
     const raw = fs.readFileSync(statePath, 'utf8');
@@ -250,7 +255,9 @@ function ensureHooksDeployed(claudeDirPath) {
 // parse context usage. Idempotent — only patches if the key is absent.
 function ensureCodexContextConfig() {
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  const configPath = path.join(home, '.codex', 'config.toml');
+  const codexDir = path.join(home, '.codex');
+  if (!fs.existsSync(codexDir)) return; // user has no Codex CLI — don't create its config dir
+  const configPath = path.join(codexDir, 'config.toml');
   try {
     let content = '';
     try { content = fs.readFileSync(configPath, 'utf8'); } catch {}
@@ -1425,8 +1432,19 @@ app.whenReady().then(async () => {
   //   群聊卡片自动同步死，只能等 5min 硬 timeout 或用户手动点提取。
   //   scripts/session-hub-hook.py 也不存在。与 findTranscriptByCCSessionId 的
   //   candidateRoots 列表对齐，单一真理源应在 ai-kinds.js（后续可重构）。
-  for (const dir of ['.claude', '.claude-deepseek']) {
-    ensureHooksDeployed(path.join(_home, dir));
+  // Hook deployment requires python (the hook command is `python session-hub-hook.py`).
+  // Without python, skip entirely — otherwise every Claude Code session on this
+  // machine would show a failing-hook error. Card sync degrades gracefully.
+  let pythonAvailable = false;
+  try {
+    require('child_process').execFileSync('where', ['python'], { stdio: 'ignore', timeout: 4000, windowsHide: true });
+    pythonAvailable = true;
+  } catch {}
+  if (pythonAvailable) {
+    ensureHooksDeployed(path.join(_home, '.claude'), { hubManaged: false });
+    ensureHooksDeployed(path.join(_home, '.claude-deepseek'), { hubManaged: true });
+  } else {
+    console.warn('[群聊] python not found on PATH — skipping hook deployment (card auto-sync disabled until python is installed)');
   }
   traceStartup('deploy hooks done');
   traceStartup('codex config start');

@@ -41,6 +41,10 @@ if ($major -lt 18) {
 Write-Host "[OK] Node.js $nodeV" -ForegroundColor Green
 
 # 2) Install dependencies
+# Electron's postinstall downloads a ~100MB binary from GitHub, which is
+# unreliable in some networks (e.g. mainland China). Point it at the npmmirror
+# CDN unless the user already configured a mirror themselves.
+if (-not $env:ELECTRON_MIRROR) { $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/" }
 Write-Host "[..] Installing dependencies (first run ~1-3 min, downloads Electron)..." -ForegroundColor Yellow
 Push-Location $root
 try {
