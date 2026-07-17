@@ -4,6 +4,12 @@
 
 一个给日常 vibecoding 用的多 AI 集成平台。它本身**不含 AI**，靠调用你本机已安装并登录的 AI CLI 工作，所有数据只存在你自己的电脑上。
 
+![主界面](docs/screenshots/main-empty.png)
+
+| 首次启动欢迎向导（自动检测已装的 AI） | 建群：未就绪的 AI 会被标出 |
+|---|---|
+| ![欢迎向导](docs/screenshots/welcome-guide.png) | ![建群弹窗](docs/screenshots/create-group-notready.png) |
+
 ---
 
 ## ✨ 核心功能
@@ -33,6 +39,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ### 方式 B：安装器（只想用，不改代码）
 
 到 [Releases](https://github.com/TianLin0509/ai-group-chat-hub/releases) 下载 `AIGroupChatHub-Setup-x.y.z.exe`，双击安装，桌面出图标。
+
+> 安装器未做代码签名，Windows SmartScreen 可能弹「已保护你的电脑」——点 **更多信息 → 仍要运行** 即可（源码就在本仓库，可自行审计/自行打包）。
 
 **首次启动会有欢迎向导**，自动检测你本机装了哪些 AI CLI，并提示还差什么、怎么补。
 

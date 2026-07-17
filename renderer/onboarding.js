@@ -115,5 +115,14 @@
   // Re-openable from a menu / settings ("重新查看引导").
   window.showOnboarding = _render;
 
-  window.addEventListener('load', () => setTimeout(maybeShow, 700));
+  window.addEventListener('load', () => {
+    setTimeout(maybeShow, 700);
+    // Gear menu entry: "👋 使用引导" re-opens the guide any time.
+    const item = document.getElementById('options-onboarding');
+    if (item) item.addEventListener('click', () => {
+      const menu = document.getElementById('options-menu');
+      if (menu) menu.style.display = 'none';
+      _render();
+    });
+  });
 })();

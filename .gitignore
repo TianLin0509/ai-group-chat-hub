@@ -33,7 +33,7 @@ tests/screenshots-sprint1/
 # Isolated-Hub data dirs / cdp probes / e2e scratch
 .tmp-e2e/
 .smoke-data*
-_cdp-check.js
+_cdp-*.js
 
 # Per-meeting runtime artifacts (covenant snapshots, session state)
 .arena/

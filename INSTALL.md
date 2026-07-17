@@ -45,6 +45,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 到 [Releases](https://github.com/TianLin0509/ai-group-chat-hub/releases) 下载 `AIGroupChatHub-Setup-x.y.z.exe`，双击安装，桌面出图标。此方式无需 Node。
 
+> **SmartScreen 提示**：安装器未做代码签名，Windows 可能弹「已保护你的电脑」——点「更多信息 → 仍要运行」即可。
+
 ---
 
 ## 2. 启动

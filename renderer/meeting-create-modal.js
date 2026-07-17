@@ -21,6 +21,53 @@ let _modalEl = null;
 let _isGroupChat = true;
 let _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
 let _escListener = null;
+// AI readiness ({claude,codex,gemini,deepseek: bool}); null = unknown (no marks).
+// Refreshed on every modal open so the member dropdowns can flag AIs that are
+// not installed / not configured — picking one would hang at "创建中" forever.
+let _readiness = null;
+
+function _kindReady(kind) {
+  return !_readiness || _readiness[kind] !== false;
+}
+
+function _kindOptionLabel(kind) {
+  const base = KIND_LABELS[kind] || kind;
+  if (_kindReady(kind)) return base;
+  return kind === 'deepseek' ? `${base}（需 API Key）` : `${base}（未检测到）`;
+}
+
+async function _refreshReadiness() {
+  try {
+    const [clis, cfg] = await Promise.all([
+      ipcRenderer.invoke('detect-clis').catch(() => null),
+      ipcRenderer.invoke('get-hub-config-raw').catch(() => null),
+    ]);
+    if (!clis) return;
+    _readiness = {
+      claude: !!clis.claude,
+      codex: !!clis.codex,
+      gemini: !!clis.gemini,
+      deepseek: !!(cfg && cfg.deepseekApiKey),
+    };
+    if (_modalEl && _modalEl.style.display !== 'none') {
+      _syncGroupSlotsFromDom();
+      _renderSlots();
+      _renderReadyHint();
+    }
+  } catch { /* readiness marks are best-effort; modal works without them */ }
+}
+
+function _renderReadyHint() {
+  if (!_modalEl) return;
+  const hint = _modalEl.querySelector('#mcm-ready-hint');
+  if (!hint) return;
+  const missing = _readiness
+    ? Object.keys(_readiness).filter(k => _readiness[k] === false).map(k => KIND_LABELS[k] || k)
+    : [];
+  if (missing.length === 0) { hint.style.display = 'none'; hint.textContent = ''; return; }
+  hint.style.display = 'block';
+  hint.textContent = `⚠ ${missing.join(' / ')} 尚未就绪（未装 CLI 或未配 Key），选它们创建后会一直等待。可先到 ⚙️ 设置 完成配置。`;
+}
 
 function _escapeHtml(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -45,7 +92,7 @@ function _cloneSlots(slots) {
 function _slotHtml(i, spec, isGroup) {
   const def = spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0];
   const aiOptions = Object.keys(MODELS_BY_KIND).map(k =>
-    `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(KIND_LABELS[k] || k)}</option>`
+    `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}>${_escapeHtml(_kindOptionLabel(k))}</option>`
   ).join('');
   const avatarSrc = _aiLogo(def.kind);
   const avatarAlt = KIND_LABELS[def.kind] || def.kind;
@@ -128,6 +175,7 @@ function _ensureModal() {
         </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
+        <div id="mcm-ready-hint" style="display:none; font-size:12px; color:#c47a00; margin-top:8px; line-height:1.6;"></div>
       </div>
       <div class="mcm-footer">
         <button class="mcm-cancel">取消</button>
@@ -214,6 +262,8 @@ function openMeetingCreateModal() {
   _clearError();
   _groupSlots = DEFAULT_GROUP_MEMBERS.map(x => ({ ...x }));
   _renderSlots();
+  _renderReadyHint();
+  _refreshReadiness();
 
   const modeLabel = _modalEl.querySelector('#mcm-mode-label');
   modeLabel.textContent = 'AI 群聊';
