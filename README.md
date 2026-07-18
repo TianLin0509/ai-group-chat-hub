@@ -6,7 +6,7 @@
 
 > ▶️ **[1 分钟宣传片](https://github.com/TianLin0509/ai-group-chat-hub/releases/download/v1.0.1/AIGroupChatHub-Promo.mp4)** —— 60 秒看懂它能干什么 ｜ 宣发文案见 [docs/promo-copy.md](docs/promo-copy.md)
 
-![主界面](docs/screenshots/main-empty.png)
+![AI 群聊实况](docs/screenshots/groupchat-demo.gif)
 
 ![首次启动欢迎向导](docs/screenshots/welcome-guide.png)
 
