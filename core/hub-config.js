@@ -99,6 +99,25 @@ function normalizeCodexSubscriptionProfiles(profiles) {
   return [...byId.values()];
 }
 
+// Custom command members (v1.1.0): [{id, name, command}] — any interactive CLI
+// the user wants as a group member. Stored under config.custom_members.
+function normalizeCustomMembers(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const m of raw) {
+    if (!m || typeof m !== 'object') continue;
+    const id = String(m.id || '').trim();
+    const name = String(m.name || '').trim();
+    const command = String(m.command || '').trim();
+    if (!id || !name || !command || seen.has(id)) continue;
+    if (!/^[a-zA-Z0-9_-]{1,32}$/.test(id)) continue;
+    seen.add(id);
+    out.push({ id, name: name.slice(0, 40), command: command.slice(0, 500) });
+  }
+  return out;
+}
+
 // 导出配置值（惰性求值，首次访问时计算）
 let _cachedConfig = null;
 
@@ -126,6 +145,7 @@ function getConfig() {
     codexApiProvider: getConfigValue('codexApiProvider', 'HUB_CODEX_API_PROVIDER', 'providers.codex.provider', DEFAULTS.codex_api_provider),
     uiToolFoldThreshold: parseInt(getConfigValue('uiToolFoldThreshold', 'HUB_UI_TOOL_FOLD', 'ui.tool_fold_threshold', DEFAULTS.ui_tool_fold_threshold), 10),
     uiCodeFoldThreshold: parseInt(getConfigValue('uiCodeFoldThreshold', 'HUB_UI_CODE_FOLD', 'ui.code_fold_threshold', DEFAULTS.ui_code_fold_threshold), 10),
+    customMembers: normalizeCustomMembers(rawConfig.custom_members),
   };
 
   return _cachedConfig;

@@ -34,6 +34,34 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   };
   
   let activeConfigAi = 'codex';
+  // Custom command members (v1.1.0): [{id, name, command}], persisted via save-hub-config.
+  let customMembers = [];
+
+  function renderCustomMembers() {
+    const wrap = configEl('cfg-custom-members');
+    if (!wrap) return;
+    if (!customMembers.length) {
+      wrap.innerHTML = '<p class="config-hint" style="margin:0;">（还没有自定义成员）</p>';
+      return;
+    }
+    wrap.innerHTML = customMembers.map((m, i) => `
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid rgba(128,128,128,0.15);">
+        <strong style="flex:none; max-width:140px; overflow:hidden; text-overflow:ellipsis;">${escapeHtmlCfg(m.name)}</strong>
+        <code style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:0.75;">${escapeHtmlCfg(m.command)}</code>
+        <button type="button" class="config-back-btn" data-custom-del="${i}" style="flex:none;">删除</button>
+      </div>`).join('');
+    wrap.querySelectorAll('[data-custom-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-custom-del'), 10);
+        if (Number.isInteger(idx)) { customMembers.splice(idx, 1); renderCustomMembers(); }
+      });
+    });
+  }
+
+  function escapeHtmlCfg(s) {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   let codexSubscriptionProfiles = [
     { id: 'default', label: '主账号', home: '' },
     { id: 'second', label: '新账号', home: '' },
@@ -223,6 +251,8 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
       document.getElementById('cfg-codex-key').value = cfg.codexApiKey || '';
       document.getElementById('cfg-codex-url').value = cfg.codexApiBaseUrl || '';
       document.getElementById('cfg-codex-model').value = cfg.codexApiModel || '';
+      customMembers = Array.isArray(cfg.customMembers) ? cfg.customMembers.map(m => ({ ...m })) : [];
+      renderCustomMembers();
       updateConfigSummaries();
     } catch {
       // 加载失败也显示空白面板
@@ -245,6 +275,21 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
   
     document.getElementById('config-close').addEventListener('click', closeConfigModal);
     document.getElementById('config-cancel').addEventListener('click', closeConfigModal);
+    const customAddBtn = document.getElementById('cfg-custom-add');
+    if (customAddBtn) {
+      customAddBtn.addEventListener('click', () => {
+        const nameEl = document.getElementById('cfg-custom-name');
+        const cmdEl = document.getElementById('cfg-custom-command');
+        const name = (nameEl && nameEl.value.trim()) || '';
+        const command = (cmdEl && cmdEl.value.trim()) || '';
+        if (!name || !command) return;
+        const id = 'c' + Date.now().toString(36);
+        customMembers.push({ id, name: name.slice(0, 40), command: command.slice(0, 500) });
+        if (nameEl) nameEl.value = '';
+        if (cmdEl) cmdEl.value = '';
+        renderCustomMembers();
+      });
+    }
     const backBtn = document.getElementById('config-back');
     if (backBtn) backBtn.addEventListener('click', showConfigMainView);
     document.querySelectorAll('.config-ai-row').forEach(row => {
@@ -279,6 +324,7 @@ function createConfigModalController({ document, ipcRenderer, providerModes, ren
         codexApiKey: document.getElementById('cfg-codex-key').value.trim() || undefined,
         codexApiBaseUrl: document.getElementById('cfg-codex-url').value.trim() || undefined,
         codexApiModel: document.getElementById('cfg-codex-model').value.trim() || undefined,
+        customMembers,
       };
       try {
         const result = await ipcRenderer.invoke('save-hub-config', newConfig);

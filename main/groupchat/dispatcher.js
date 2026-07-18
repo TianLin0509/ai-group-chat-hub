@@ -2,6 +2,8 @@
 
 const groupChatWatcher = require('../../core/group-chat-watcher.js');
 const { createTurnCompletionWatcher } = require('../../core/turn-completion-watcher.js');
+const { isCustomKind } = require('../../core/ai-kinds.js');
+const { stripAnsi } = require('../../core/ansi-utils.js');
 const pasteTrappedDetector = require('../../core/paste-trapped-detector.js');
 const { createAuthBannerMonitor } = require('../../core/host-shell-detector.js');
 
@@ -434,11 +436,63 @@ function createGroupChatDispatcher(deps) {
       }
     }
 
+    // Custom command members (v1.1.0): arbitrary CLIs have no transcript/protocol
+    // signal, so completion is judged by an output-silence window on the PTY
+    // buffer. Ring-buffer safe: anchors on a pre-send tail snapshot (taken by the
+    // dispatch loop BEFORE sendToPty — fast CLIs may have fully answered by the
+    // time this watcher starts, so "growth since watcher start" must NOT be a
+    // requirement) and strips the echoed prompt via its tail token (ConPTY wraps
+    // the echo across multiple buffer lines, so "drop first line" is not enough).
+    let customSilenceTimer = null;
+    if (isCustomKind(waitKind)) {
+      const CUSTOM_TICK_MS = 2000;
+      const CUSTOM_SILENCE_MS = 8000;
+      const preSendTail = typeof opts.preSendTail === 'string' ? opts.preSendTail : '';
+      const promptTailToken = String(opts.prompt || '').trim().replace(/\s+/g, '').slice(-10);
+      let lastTail = null;
+      let lastChangeTs = Date.now();
+      customSilenceTimer = setInterval(() => {
+        if (watcher.isSettled()) { clearInterval(customSilenceTimer); customSilenceTimer = null; return; }
+        const buf = sessionManager.getSessionBuffer(sid) || '';
+        const tail = buf.slice(-200);
+        if (tail !== lastTail) {
+          lastTail = tail;
+          lastChangeTs = Date.now();
+          return;
+        }
+        if (Date.now() - lastChangeTs < CUSTOM_SILENCE_MS) return;
+        // Silence reached — extract everything after the pre-send anchor.
+        const anchorIdx = preSendTail ? buf.indexOf(preSendTail) : -1;
+        let text = anchorIdx >= 0 ? buf.slice(anchorIdx + preSendTail.length) : buf;
+        text = stripAnsi(text).replace(/\r/g, '');
+        // Strip the echoed prompt: drop lines up to (and including) the line that
+        // carries the prompt's tail token. Fallback: drop the first non-empty line.
+        let lines = text.split('\n');
+        if (promptTailToken) {
+          const echoEnd = lines.findIndex(l => l.replace(/\s+/g, '').includes(promptTailToken));
+          if (echoEnd >= 0) lines = lines.slice(echoEnd + 1);
+          else {
+            while (lines.length && !lines[0].trim()) lines.shift();
+            if (lines.length) lines.shift();
+          }
+        }
+        text = lines.join('\n').trim();
+        if (text) {
+          log(`[group-chat] custom silence-settle for ${label}(${sid.slice(0, 8)}) ${text.length} chars`);
+          watcher.completeFromTranscript(text, 'custom_silence');
+        }
+        // Empty text (echo only, CLI still thinking silently): keep ticking —
+        // the next output resets lastChangeTs; T1/T2 soft alerts still fire.
+      }, CUSTOM_TICK_MS);
+      customSilenceTimer.unref?.();
+    }
+
     const cleanupWaitResources = () => {
       if (hardTimeout) clearTimeout(hardTimeout);
       clearInterval(hostShellHeartbeat);
       if (codexAutoExtractTimer) clearInterval(codexAutoExtractTimer);
       if (codexPromptSubmitTimer) clearTimeout(codexPromptSubmitTimer);
+      if (customSilenceTimer) clearInterval(customSilenceTimer);
       if (onCodexPromptSubmitted && transcriptTap && typeof transcriptTap.removeListener === 'function') {
         try { transcriptTap.removeListener('prompt-submitted', onCodexPromptSubmitted); } catch {}
       }
@@ -538,6 +592,9 @@ function createGroupChatDispatcher(deps) {
     await Promise.all(targets.map(async (t) => {
       try {
         const sendStartedAt = Date.now();
+        if (isCustomKind(t.kind)) {
+          t.preSendTail = (sessionManager.getSessionBuffer(t.sid) || '').slice(-80);
+        }
         const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
         if (sendResult && sendResult.ok) {
           t.promptSubmitSinceTs = Math.max(0, sendStartedAt - 1000);
@@ -556,6 +613,7 @@ function createGroupChatDispatcher(deps) {
         kind: t.kind,
         prompt: t.prompt,
         promptSubmitSinceTs: t.promptSubmitSinceTs,
+        preSendTail: t.preSendTail,
         disableHardTimeout: !(Number(turnTimeoutMs) > 0),
         hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
         silent: true,
@@ -694,6 +752,11 @@ function createGroupChatDispatcher(deps) {
       await Promise.all(targets.map(async (t) => {
         try {
           const sendStartedAt = Date.now();
+          if (isCustomKind(t.kind)) {
+            // Pre-send anchor for the silence-settle extractor (fast CLIs may
+            // finish answering before waitTurnComplete even starts).
+            t.preSendTail = (sessionManager.getSessionBuffer(t.sid) || '').slice(-80);
+          }
           const sendResult = await groupChatWatcher.sendToPty(t.sid, t.prompt, t.kind);
           const ok = sendResult && sendResult.ok;
           const sendStatus = sendResult && sendResult.sendStatus;
@@ -722,7 +785,7 @@ function createGroupChatDispatcher(deps) {
       // 不阻塞整轮（防 paste-trapped 无限等待）。普通群聊保持无硬超时。
       const settled = await Promise.allSettled(sentTargets.map(t =>
         waitTurnComplete(t.sid, t.label, {
-          meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs,
+          meetingId, mode: 'group', turnNum, kind: t.kind, prompt: t.prompt, promptSubmitSinceTs: t.promptSubmitSinceTs, preSendTail: t.preSendTail,
           disableHardTimeout: !(Number(turnTimeoutMs) > 0),
           hardTimeoutMs: Number(turnTimeoutMs) > 0 ? Number(turnTimeoutMs) : undefined,
           allowActiveExtend,

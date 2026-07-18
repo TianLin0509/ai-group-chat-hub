@@ -26,6 +26,9 @@ const MARKERS = {
   // ready before the TUI input box exists.
   codex: ['Context '],
   deepseek: ['shift+tab', '? for shortcuts', 'bypass permissions', 'Try "edit'],
+  // Custom command members: no universal marker exists for arbitrary CLIs —
+  // empty array = silence-window-only readiness (buffer stable for STABLE_MS).
+  custom: [],
 };
 
 const BLOCKERS = {
@@ -55,6 +58,7 @@ const _onceTrue = new Set();    // sid → 一旦 true 永久锁
 function isReady(sessionId, kind, buf) {
   if (!sessionId) return false;
   if (_onceTrue.has(sessionId)) return true;
+  if (typeof kind === 'string' && kind.startsWith('custom:')) kind = 'custom';
   const need = MARKERS[kind];
   if (!need) return true; // 未注册 kind（如 powershell）默认 ready
   buf = buf || '';

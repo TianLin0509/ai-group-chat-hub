@@ -2,7 +2,7 @@
 
 (function () {
 const { ipcRenderer } = require('electron');
-const { KIND_LABELS } = require('../core/ai-kinds.js');
+const { KIND_LABELS, isCustomKind, logoNameForKind } = require('../core/ai-kinds.js');
 const { MODEL_OPTIONS_BY_KIND, DEFAULT_MODEL_BY_KIND } = require('../core/model-options.js');
 const { findUnavailableKinds } = require('../core/provider-readiness.js');
 
@@ -24,21 +24,40 @@ let _escListener = null;
 // not installed / not configured — picking one would hang at "创建中" forever.
 let _readiness = null;
 let _readinessLoading = false;
+// Custom command members from config (v1.1.0) — appended to the AI dropdowns.
+let _customMembers = [];
+
+function _customById(id) {
+  return _customMembers.find(m => m.id === id) || null;
+}
 
 function _kindReady(kind) {
+  if (isCustomKind(kind)) return true; // saved commands are taken on trust
   return !_readiness || _readiness[kind] !== false;
 }
 
 function _kindOptionLabel(kind) {
+  if (isCustomKind(kind)) {
+    const cm = _customById(kind.slice('custom:'.length));
+    return `${cm ? cm.name : kind}（自定义）`;
+  }
   const base = KIND_LABELS[kind] || kind;
   if (_kindReady(kind)) return base;
   return kind === 'deepseek' ? `${base}（需 Claude CLI + API Key）` : `${base}（未检测到）`;
+}
+
+function _allKindChoices() {
+  return [...Object.keys(MODEL_OPTIONS_BY_KIND), ..._customMembers.map(m => `custom:${m.id}`)];
 }
 
 async function _refreshReadiness() {
   _readinessLoading = true;
   _updateCreateState();
   try {
+    try {
+      const cfg = await ipcRenderer.invoke('get-hub-config-raw');
+      _customMembers = (cfg && Array.isArray(cfg.customMembers)) ? cfg.customMembers : [];
+    } catch { _customMembers = []; }
     const readiness = await ipcRenderer.invoke('get-ai-readiness');
     if (!readiness || typeof readiness !== 'object') throw new Error('empty readiness result');
     _readiness = readiness;
@@ -96,7 +115,7 @@ function _updateCreateState() {
   const createBtn = _modalEl.querySelector('.mcm-create');
   const addBtn = _modalEl.querySelector('#mcm-add-member');
   const slots = _selectedSlots();
-  const unavailable = _readiness ? findUnavailableKinds(slots, _readiness) : [];
+  const unavailable = _readiness ? findUnavailableKinds(slots, _readiness, { customMembers: _customMembers }) : [];
   const blocked = _readinessLoading || !_readiness || slots.length === 0 || unavailable.length > 0;
   if (createBtn && createBtn.textContent !== '创建群聊中...') {
     createBtn.disabled = blocked;
@@ -115,10 +134,13 @@ function _escapeHtml(s) {
 }
 
 function _aiLogo(kind) {
-  return `assets/ai-logos/${kind}.svg`;
+  return `assets/ai-logos/${logoNameForKind(kind)}.svg`;
 }
 
 function _modelOptions(kind, selected) {
+  if (isCustomKind(kind)) {
+    return '<option value="" selected>跟随启动命令</option>';
+  }
   const opts = MODEL_OPTIONS_BY_KIND[kind] || [];
   return opts.map((option, i) =>
     `<option value="${_escapeHtml(option.id)}"${option.id === selected || (!selected && i === 0) ? ' selected' : ''}>${_escapeHtml(option.label)}</option>`
@@ -131,7 +153,7 @@ function _cloneSlots(slots) {
 
 function _slotHtml(i, spec, isGroup) {
   const def = spec || DEFAULT_SLOTS[i] || DEFAULT_SLOTS[0];
-  const aiOptions = Object.keys(MODEL_OPTIONS_BY_KIND).map(k =>
+  const aiOptions = _allKindChoices().map(k =>
     `<option value="${_escapeHtml(k)}"${k === def.kind ? ' selected' : ''}${_readiness && !_kindReady(k) ? ' disabled' : ''}>${_escapeHtml(_kindOptionLabel(k))}</option>`
   ).join('');
   const avatarSrc = _aiLogo(def.kind);
@@ -215,6 +237,12 @@ function _ensureModal() {
           <input id="mcm-title-input" class="mcm-title-input" type="text" maxlength="40"
                  placeholder="留空则自动编号：AI 群聊 #N" autocomplete="off">
         </div>
+        <div class="mcm-name-row">
+          <label class="mcm-name-label" for="mcm-projdir-input">项目目录（可选）</label>
+          <input id="mcm-projdir-input" class="mcm-title-input" type="text"
+                 placeholder="留空 = Hub 独立目录；填写后成员将在该目录工作（AI 可读写该项目）" spellcheck="false">
+          <button type="button" id="mcm-projdir-browse" class="mcm-cancel" style="flex:none; padding:6px 14px;">浏览…</button>
+        </div>
         <div class="mcm-slots"></div>
         <button type="button" class="mcm-add-member" id="mcm-add-member">+ 添加成员</button>
         <div id="mcm-ready-hint" style="display:none; font-size:12px; color:#c47a00; margin-top:8px; line-height:1.6;"></div>
@@ -245,6 +273,15 @@ function _bindEvents() {
     _renderSlots();
     _updateCreateState();
   });
+  const browseBtn = _modalEl.querySelector('#mcm-projdir-browse');
+  if (browseBtn) {
+    browseBtn.addEventListener('click', async () => {
+      try {
+        const dir = await ipcRenderer.invoke('pick-directory');
+        if (dir) _modalEl.querySelector('#mcm-projdir-input').value = dir;
+      } catch { /* dialog cancelled or unavailable */ }
+    });
+  }
   _modalEl.addEventListener('click', (e) => {
     if (e.target === _modalEl) closeMeetingCreateModal();
   });
@@ -262,6 +299,8 @@ async function _onCreate() {
   const scene = 'general';
   const titleInput = _modalEl.querySelector('#mcm-title-input');
   const title = titleInput ? titleInput.value.trim() : '';
+  const projDirInput = _modalEl.querySelector('#mcm-projdir-input');
+  const projectDir = projDirInput ? projDirInput.value.trim() : '';
 
   const createBtn = _modalEl.querySelector('.mcm-create');
   createBtn.disabled = true;
@@ -277,6 +316,7 @@ async function _onCreate() {
       groupMode: _isGroupChat ? 'deliberation' : null,
       groupRecentRawN: 5,
       participants: _isGroupChat ? slots.map((_, i) => i) : null,
+      projectDir: projectDir || null,
     });
     if (!meeting || !meeting.id) throw new Error('create-meeting returned empty meeting');
     closeMeetingCreateModal();
@@ -322,6 +362,8 @@ function openMeetingCreateModal() {
 
   const titleInput = _modalEl.querySelector('#mcm-title-input');
   if (titleInput) titleInput.value = '';
+  const projDirInput = _modalEl.querySelector('#mcm-projdir-input');
+  if (projDirInput) projDirInput.value = '';
   const addBtn = _modalEl.querySelector('#mcm-add-member');
   if (addBtn) addBtn.style.display = 'inline-flex';
   const createBtn = _modalEl.querySelector('.mcm-create');

@@ -923,6 +923,17 @@ registerAppUtilityIpc(ipcMain, {
 
 registerPathIpc(ipcMain);
 
+// P1: native directory picker for "bind a project directory" in the create-group modal.
+ipcMain.handle('pick-directory', async () => {
+  const { dialog } = require('electron');
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: '选择项目目录',
+    properties: ['openDirectory'],
+  });
+  if (res.canceled || !res.filePaths || !res.filePaths[0]) return null;
+  return res.filePaths[0];
+});
+
 // Detect which AI CLIs are available on PATH — powers the first-run welcome guide.
 ipcMain.handle('detect-clis', async () => detectCliCommands());
 ipcMain.handle('get-ai-readiness', async () => getProviderReadiness());

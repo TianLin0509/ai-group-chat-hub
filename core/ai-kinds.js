@@ -175,8 +175,34 @@ function slotIndexToId(idx) {
   return SLOT_IDS[idx] || null;
 }
 
+// ---------------------------------------------------------------------------
+// Custom command members (v1.1.0): kind = `custom:<id>` where <id> refers to an
+// entry in config.customMembers ({id, name, command}). A custom member is any
+// interactive CLI the user launches by command — the escape hatch for AIs the
+// Hub does not natively integrate (company gateways, ollama, ssh'd tools...).
+// Deliberately NOT added to ALL_AI_KINDS: every native-kind special case
+// (transcript taps, usage parsers, resume flows) should treat it as unknown and
+// fall back to generic PTY behavior.
+// ---------------------------------------------------------------------------
+function isCustomKind(kind) {
+  return typeof kind === 'string' && kind.startsWith('custom:');
+}
+function customIdFromKind(kind) {
+  return isCustomKind(kind) ? kind.slice('custom:'.length) : null;
+}
+// Which logo asset a kind renders with (custom/unknown fall back to the
+// terminal icon). Keeps renderer call sites from 404-ing on `custom:<id>.svg`.
+function logoNameForKind(kind) {
+  if (isCustomKind(kind)) return 'powershell';
+  const base = String(kind || '').replace(/-resume$/, '');
+  return ['claude', 'gemini', 'codex', 'deepseek', 'powershell'].includes(base) ? base : 'powershell';
+}
+
 module.exports = {
   ALL_AI_KINDS,
+  isCustomKind,
+  customIdFromKind,
+  logoNameForKind,
   WEB_STYLE_KINDS,
   CODEX_CLI_KINDS,
   CODEX_SESSION_KINDS,

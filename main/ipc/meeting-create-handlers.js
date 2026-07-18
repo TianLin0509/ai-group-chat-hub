@@ -1,6 +1,8 @@
 'use strict';
 
+const fs = require('fs');
 const { findUnavailableKinds } = require('../../core/provider-readiness.js');
+const { getConfig: getHubConfigForMembers } = require('../../core/hub-config.js');
 
 function createMeetingSubAdder(deps) {
   const {
@@ -60,10 +62,12 @@ function createMeetingSubAdder(deps) {
     }
 
     if (!sessionOpts.cwd) {
-      // Group members run in a narrow Hub-owned directory. The old public
-      // default used the user's entire home directory, which granted a safe
-      // session a much broader workspace than the meeting actually needs.
-      const workspaceDir = meeting ? getMeetingWorkspaceDir(meetingId) : null;
+      // P1: a meeting may be bound to the user's own project directory — members
+      // then work inside that project (AI can read/write it). Otherwise fall back
+      // to the narrow Hub-owned workspace directory.
+      const boundDir = meeting && typeof meeting.projectDir === 'string' && meeting.projectDir
+        && fs.existsSync(meeting.projectDir) ? meeting.projectDir : null;
+      const workspaceDir = boundDir || (meeting ? getMeetingWorkspaceDir(meetingId) : null);
       if (workspaceDir) {
         try {
           fs.mkdirSync(workspaceDir, { recursive: true });
@@ -106,6 +110,13 @@ function registerMeetingCreateIpc(ipcMain, deps) {
   ipcMain.handle('create-meeting', async (_e, opts) => {
     const safe = { ...(opts || {}) };
     safe.groupChat = true;
+    if (typeof safe.projectDir === 'string' && safe.projectDir.trim()) {
+      const dir = safe.projectDir.trim();
+      if (!fs.existsSync(dir)) throw new Error(`项目目录不存在：${dir}`);
+      safe.projectDir = dir;
+    } else {
+      safe.projectDir = null;
+    }
     if (!Array.isArray(safe.slots) || safe.slots.length === 0) {
       throw new Error('请至少选择 1 位 AI 成员。');
     }
@@ -116,7 +127,9 @@ function registerMeetingCreateIpc(ipcMain, deps) {
       throw new Error('AI 就绪状态检测器不可用，请重启应用后再试。');
     }
     const readiness = await getProviderReadiness();
-    const unavailableKinds = findUnavailableKinds(safe.slots, readiness);
+    const unavailableKinds = findUnavailableKinds(safe.slots, readiness, {
+      customMembers: getHubConfigForMembers().customMembers || [],
+    });
     if (unavailableKinds.length > 0) {
       const labels = unavailableKinds.map(kind => kindLabels[kind] || kind).join(' / ');
       throw new Error(`${labels} 尚未就绪。请先安装并登录对应 CLI，或为 DeepSeek 配置 API Key。`);

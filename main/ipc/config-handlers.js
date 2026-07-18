@@ -29,6 +29,7 @@ function toMaskedConfig(config) {
     codexApiKeySet: !!config.codexApiKey,
     codexApiBaseUrl: config.codexApiBaseUrl,
     codexApiModel: config.codexApiModel,
+    customMembers: config.customMembers || [],
   };
 }
 
@@ -50,6 +51,7 @@ function toEditableConfig(config) {
     codexApiModel: config.codexApiModel,
     uiToolFoldThreshold: Number.isFinite(config.uiToolFoldThreshold) ? config.uiToolFoldThreshold : 15,
     uiCodeFoldThreshold: Number.isFinite(config.uiCodeFoldThreshold) ? config.uiCodeFoldThreshold : 30,
+    customMembers: config.customMembers || [],
   };
 }
 
@@ -119,6 +121,19 @@ function buildConfigJsonUpdate(existing, newConfig) {
         };
       })(),
     },
+    // Custom command members (v1.1.0). Sanitize: id slug + non-empty name/command.
+    custom_members: H('customMembers')
+      ? (Array.isArray(newConfig.customMembers)
+          ? newConfig.customMembers
+              .filter(m => m && typeof m === 'object')
+              .map(m => ({
+                id: String(m.id || '').trim(),
+                name: String(m.name || '').trim().slice(0, 40),
+                command: String(m.command || '').trim().slice(0, 500),
+              }))
+              .filter(m => /^[a-zA-Z0-9_-]{1,32}$/.test(m.id) && m.name && m.command)
+          : [])
+      : existing.custom_members,
   };
 
   if (!merged.providers.claude.api_key) delete merged.providers.claude.api_key;

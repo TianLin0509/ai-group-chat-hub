@@ -9,7 +9,7 @@ if (typeof document !== 'undefined') (function () {
   const { isSlotParticipatingThisTurn } = require('../core/meeting-room.js');
   const { isPasteSensitive, kindRegexAlternation, KIND_LABELS, ALL_AI_KINDS, getKindLabel,
           SLOT_IDS, SLOT_DISPLAY, getSlotPromptName, getSlotDisplayLabel,
-          slotIdRegexAlternation, slotIdToIndex, slotIndexToId } = require('../core/ai-kinds.js');
+          slotIdRegexAlternation, slotIdToIndex, slotIndexToId, logoNameForKind } = require('../core/ai-kinds.js');
   const {
     avatarBySlot: _avatarBySlot,
     avatarFallbackBySlot: _avatarFallbackBySlot,
@@ -1358,7 +1358,7 @@ if (typeof document !== 'undefined') (function () {
     // AI 群聊卡片头像与 slot 位置绑定（不与 kind 绑定）。
     //   slot 1 永远皮卡丘，slot 2 永远小火龙，slot 3 永远杰尼龟，便于用户视觉识别
     //   "哪一格是哪家"。CSS 主题色亦按 slot 上色（见 .mr-ft.slot-N），kind 仅作 data-attribute。
-    const avatarSrc = isGroupChat ? `assets/ai-logos/${kind}.svg` : _avatarBySlot(slotIdx);
+    const avatarSrc = isGroupChat ? `assets/ai-logos/${logoNameForKind(kind)}.svg` : _avatarBySlot(slotIdx);
     const avatarFb = _avatarFallbackBySlot(slotIdx);
     const avatarHtml = avatarSrc
       ? `<div class="mr-ft-avatar"><img src="${avatarSrc}" alt="${kind || 'slot' + (slotIdx + 1)}" onerror="this.parentNode.textContent='${avatarFb}'; this.parentNode.style.cssText+=';display:flex;align-items:center;justify-content:center;font-size:30px;'"></div>`
@@ -1801,7 +1801,7 @@ if (typeof document !== 'undefined') (function () {
     const avatarsHtml = sids.map((sid, idx) => {
       const slot = slots[idx] || {};
       const src = meeting && meeting.groupChat && slot.kind
-        ? `assets/ai-logos/${slot.kind}.svg`
+        ? `assets/ai-logos/${logoNameForKind(slot.kind)}.svg`
         : _avatarBySlot(idx);
       const fb = meeting && meeting.groupChat
         ? escapeHtml((slot.displayLabel || slot.kind || `AI ${idx + 1}`).slice(0, 2))
@@ -1925,7 +1925,7 @@ if (typeof document !== 'undefined') (function () {
   }
 
   function _groupLogoSrc(kind) {
-    return `assets/ai-logos/${escapeHtml(kind || 'claude')}.svg`;
+    return `assets/ai-logos/${escapeHtml(logoNameForKind(kind || 'claude'))}.svg`;
   }
 
   function _formatGroupChatTime(ts) {

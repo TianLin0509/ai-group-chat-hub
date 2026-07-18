@@ -140,6 +140,13 @@ async function waitCliReady(sid, kind, maxMs = 60000) {
 //   所以 prompt 和 '\r' **必须分两次 write**，中间留 TUI 消化窗口；不能合并 `prompt + '\r'`。
 async function sendToPty(sid, prompt, kind) {
   const { sessionManager } = _deps;
+  // Custom command members (v1.1.0): arbitrary CLIs treat a mid-paste '\r' as
+  // submit — a multiline prompt would be executed line by line. Flatten to a
+  // single line before typing (markdown structure degrades, acceptable for the
+  // escape-hatch member type).
+  if (typeof kind === 'string' && kind.startsWith('custom:')) {
+    prompt = String(prompt || '').replace(/\r?\n+/g, '　').trim();
+  }
   const FAST_PATH_QUIET_MS = 250;       // 连续 250ms 无 PTY 数据 → 视为 paste 接收完
   const FAST_PATH_MAX_WAIT_MS = 3000;   // 上限：极大 prompt 也不无限等
   const FAST_PATH_POLL_MS = 50;

@@ -61,6 +61,9 @@ class MeetingRoomManager {
       mode: 'free',
       // free-mode（2026-05-04）：自由模式参与者 slot 列表，默认全员勾选
       participants: Array.isArray(opts.participants) ? opts.participants.slice() : [0, 1, 2],
+      // P1（2026-07-18）：可选的绑定项目目录。非空时群成员 cwd = 该目录（AI 可读写
+      //   用户项目）；空 = 沿用 Hub 专属 workspace 隔离目录。
+      projectDir: typeof opts.projectDir === 'string' && opts.projectDir.trim() ? opts.projectDir.trim() : null,
     };
     // Hub Timeline phase 1 (in-memory only)
     meeting._timeline = [];
@@ -195,7 +198,7 @@ class MeetingRoomManager {
     }
     const allowed = [
       'title', 'layout', 'focusedSub', 'syncContext', 'sendTarget', 'pinned',
-      'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText',
+      'lastMessageTime', 'status', 'lastScene', 'scene', 'covenantText', 'projectDir',
       'userRenamed', 'autoTitlePending', 'autoTitleGenerated',
       'serialWorkflow',
     ];
@@ -269,6 +272,7 @@ class MeetingRoomManager {
       participants: Array.isArray(meetingData.participants) ? meetingData.participants : null,
       // 串行工作流配置（2026-06-17 道雪）：重启恢复
       serialWorkflow: (meetingData.serialWorkflow && typeof meetingData.serialWorkflow === 'object') ? meetingData.serialWorkflow : null,
+      projectDir: typeof meetingData.projectDir === 'string' && meetingData.projectDir ? meetingData.projectDir : null,
       _timeline: [],
       _cursors: {},
       _nextIdx: 0,

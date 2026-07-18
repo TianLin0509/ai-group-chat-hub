@@ -1,6 +1,6 @@
 'use strict';
 
-const { ALL_AI_KINDS } = require('./ai-kinds.js');
+const { ALL_AI_KINDS, isCustomKind } = require('./ai-kinds.js');
 
 function buildProviderReadiness(clis = {}, config = {}) {
   return {
@@ -13,11 +13,19 @@ function buildProviderReadiness(clis = {}, config = {}) {
   };
 }
 
-function findUnavailableKinds(slots = [], readiness = {}) {
+function findUnavailableKinds(slots = [], readiness = {}, opts = {}) {
+  // Custom command members cannot be pre-checked (any command the user saved is
+  // taken on trust); validate only that the referenced id still exists.
+  const customIds = new Set(Array.isArray(opts.customMembers) ? opts.customMembers.map(m => m && m.id).filter(Boolean) : []);
   const unavailable = [];
   for (const slot of slots) {
     const kind = String(slot && slot.kind || '').trim();
     if (!kind || unavailable.includes(kind)) continue;
+    if (isCustomKind(kind)) {
+      const id = kind.slice('custom:'.length);
+      if (!customIds.has(id)) unavailable.push(kind);
+      continue;
+    }
     if (!ALL_AI_KINDS.includes(kind) || readiness[kind] !== true) unavailable.push(kind);
   }
   return unavailable;

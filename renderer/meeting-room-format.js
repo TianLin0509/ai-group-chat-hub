@@ -58,7 +58,10 @@ function formatThinkTime(seconds) {
 }
 
 function avatarSrcFor(kind) {
-  return KIND_AVATAR_SRC[kind] || '';
+  if (KIND_AVATAR_SRC[kind]) return KIND_AVATAR_SRC[kind];
+  // Custom command members / unknown kinds fall back to the terminal icon.
+  if (typeof kind === 'string' && kind.startsWith('custom:')) return 'assets/ai-logos/powershell.svg';
+  return '';
 }
 
 function avatarFallbackFor(kind) {

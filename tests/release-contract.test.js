@@ -19,7 +19,7 @@ test('documented runtime floor covers package engine requirements', () => {
 
 test('package and lockfile versions describe the same patch release', () => {
   const lock = require('../package-lock.json');
-  assert.equal(pkg.version, '1.0.1');
+  assert.equal(pkg.version, '1.1.0');
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
   assert.equal(lock.packages[''].engines.node, '>=20');

@@ -269,6 +269,17 @@
               <span class="config-ai-status api" id="cfg-status-deepseek">API</span>
             </button>
           </div>
+
+          <div class="config-field" style="margin-top:18px;">
+            <label>自定义成员（高级）</label>
+            <p class="config-hint" style="margin:4px 0 8px;">任何能在 PowerShell 里启动的交互式 AI CLI 都可以保存为群聊成员（如公司内部网关、ollama、ssh 工具）。保存后建群下拉里可选。</p>
+            <div id="cfg-custom-members"></div>
+            <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+              <input type="text" id="cfg-custom-name" placeholder="名称（如 内部助手）" style="flex:1; min-width:120px;" maxlength="40" spellcheck="false">
+              <input type="text" id="cfg-custom-command" placeholder="启动命令（如 my-ai --chat）" style="flex:2; min-width:200px;" maxlength="500" spellcheck="false">
+              <button type="button" id="cfg-custom-add" class="config-back-btn" style="flex:none;">＋ 添加</button>
+            </div>
+          </div>
         </div>
 
         <div id="config-detail-view" class="hidden">

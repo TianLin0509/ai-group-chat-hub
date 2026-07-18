@@ -6,7 +6,7 @@ const { randomUUID } = require('crypto');
 const { EventEmitter } = require('events');
 const { getConfig } = require('./hub-config.js');
 const { getHubDataDir } = require('./data-dir');
-const { isClaudeFamily, isCodexCliKind } = require('./ai-kinds.js');
+const { isClaudeFamily, isCodexCliKind, isCustomKind, customIdFromKind } = require('./ai-kinds.js');
 const { normalizeDeepSeekModel, deepseekDisplayName, DEFAULT_MODEL_BY_KIND, modelFlag } = require('./model-options.js');
 const {
   normalizeExecutionMode,
@@ -602,9 +602,22 @@ class SessionManager extends EventEmitter {
     const isGemini = kind === 'gemini' || kind === 'gemini-resume';
     const isCodex = isCodexCliKind(kind);
     const isDeepSeek = kind === 'deepseek' || kind === 'deepseek-resume';
-    const isAgent = isClaude || isGemini || isCodex || isDeepSeek;
+    // Custom command member (v1.1.0): kind='custom:<id>' → look up the saved
+    // {name, command} in config. Unknown id → fail fast (caller surfaces error).
+    const isCustom = isCustomKind(kind);
+    let customMember = null;
+    if (isCustom) {
+      const cid = customIdFromKind(kind);
+      customMember = (getConfig().customMembers || []).find(m => m.id === cid) || null;
+      if (!customMember) {
+        console.warn(`[hub] custom member not found in config: ${kind}`);
+        return null;
+      }
+    }
+    const isAgent = isClaude || isGemini || isCodex || isDeepSeek || isCustom;
     let title;
-    if (opts.title) title = opts.title;
+    if (opts.title && !(isCustom && opts.title.includes('custom:'))) title = opts.title;
+    else if (isCustom) { this.customCounter = (this.customCounter || 0) + 1; title = this.customCounter > 1 ? `${customMember.name} ${this.customCounter}` : customMember.name; }
     else if (kind === 'claude') title = `Claude ${++this.claudeCounter}`;
     else if (kind === 'claude-resume') title = `Claude Resume ${++this.resumeCounter}`;
     else if (kind === 'gemini') { this.geminiCounter = (this.geminiCounter || 0) + 1; title = `Gemini ${this.geminiCounter}`; }
@@ -1037,6 +1050,34 @@ class SessionManager extends EventEmitter {
       // 群聊成员：禁 skill + plugin
       cmd += buildGroupChatIsolationFlags(opts.meetingId);
       cmd += '\r\n';
+      let sent = false;
+      let debounceTimer = null;
+      const watcher = ptyProcess.onData(() => {
+        if (sent) return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          if (sent) return;
+          sent = true;
+          watcher.dispose();
+          const s = this.sessions.get(id);
+          if (s) s.pty.write(cmd);
+        }, 200);
+      });
+      const safetyTimer = setTimeout(() => {
+        if (sent) return;
+        sent = true;
+        watcher.dispose();
+        if (debounceTimer) clearTimeout(debounceTimer);
+        const s = this.sessions.get(id);
+        if (s) s.pty.write(cmd);
+      }, 3000);
+      pendingTimers.push(safetyTimer);
+    }
+
+    if (isCustom) {
+      // Custom interactive CLI: after the host shell settles, type the user's
+      // saved launch command. Everything downstream is generic PTY behavior.
+      const cmd = ' ' + customMember.command + '\r\n';
       let sent = false;
       let debounceTimer = null;
       const watcher = ptyProcess.onData(() => {

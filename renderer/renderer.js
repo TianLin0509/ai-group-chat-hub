@@ -2998,6 +2998,7 @@ function schedulePersist() {
       slotSpecs: Array.isArray(m.slotSpecs) ? m.slotSpecs : null,
       covenantText: m.covenantText || '',
       serialWorkflow: (m.serialWorkflow && typeof m.serialWorkflow === 'object') ? m.serialWorkflow : null,
+      projectDir: typeof m.projectDir === 'string' && m.projectDir ? m.projectDir : null,
     }));
     ipcRenderer.send('persist-sessions', list, meetingList);
   }, 400);
