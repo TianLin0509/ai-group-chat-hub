@@ -4,6 +4,8 @@
 
 一个给日常 vibecoding 用的多 AI 集成平台。它本身**不含 AI**，靠调用你本机已安装并登录的 AI CLI 工作，所有数据只存在你自己的电脑上。
 
+> ▶️ **[1 分钟宣传片](https://github.com/TianLin0509/ai-group-chat-hub/releases/download/v1.0.1/AIGroupChatHub-Promo.mp4)** —— 60 秒看懂它能干什么 ｜ 宣发文案见 [docs/promo-copy.md](docs/promo-copy.md)
+
 ![主界面](docs/screenshots/main-empty.png)
 
 ![首次启动欢迎向导](docs/screenshots/welcome-guide.png)
