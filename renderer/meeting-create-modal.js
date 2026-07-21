@@ -330,6 +330,16 @@ async function _onCreate() {
   }
 }
 
+// Electron wraps IPC rejections as
+//   "Error invoking remote method 'x': Error: <real message>"
+// — strip that plumbing so the user sees only the actionable part.
+function _cleanIpcError(text) {
+  return String(text || '')
+    .replace(/^Error invoking remote method '[^']*':\s*/, '')
+    .replace(/^(Uncaught\s+)?Error:\s*/, '')
+    .trim() || '未知错误';
+}
+
 function _showError(text) {
   let bar = _modalEl.querySelector('.mcm-error');
   if (!bar) {
@@ -338,7 +348,7 @@ function _showError(text) {
     const footer = _modalEl.querySelector('.mcm-footer');
     if (footer) footer.before(bar);
   }
-  bar.textContent = `创建失败：${text}`;
+  bar.textContent = `创建失败：${_cleanIpcError(text)}`;
 }
 
 function _clearError() {
