@@ -177,104 +177,51 @@ function createAccountUsageController({
   }
   
   function render() {
-    const el = document.getElementById('account-usage');
+    // 2026-07-19 道雪 · 方案C：用量面板从侧栏迁移为顶部全局 ticker。
+    // 铁律：每个窗口都显示「用量% + 重置时间」（5h 重置是用户最高频关注点，不可省略）。
+    const el = document.getElementById('quota-ticker');
     if (!el) return;
-    el.style.display = 'block';
+    el.style.display = 'flex';
   
     const pctCls = (pct) => pct >= 85 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
   
-    const renderBar = (label, u) => {
-      const resetTxt = u && u.resetsAt ? formatResetIn(u.resetsAt) : '';
-      const resetHtml = resetTxt
-        ? `<span class="acc-bar-reset" title="距离 ${label} 配额刷新还有 ${resetTxt}">${resetTxt}</span>`
-        : `<span class="acc-bar-reset"></span>`;
-      if (!u || u.pct === null || u.pct === undefined) {
-        return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill dim" style="width:0%"></div></div><span class="acc-bar-pct dim">—</span>${resetHtml}</div>`;
-      }
-      const pct = Math.round(u.pct);
-      const cls = pctCls(pct);
-      const w = pct <= 0 ? 0 : Math.max(2, Math.min(100, pct));
-      return `<div class="acc-bar-line"><span class="acc-bar-label">${label}</span><div class="acc-bar-track"><div class="acc-bar-fill ${cls}" style="width:${w}%"></div></div><span class="acc-bar-pct ${cls}">${pct}%</span>${resetHtml}</div>`;
+    const renderWindow = (fallbackLabel, usage) => {
+      const label = usage && usage.label ? usage.label : fallbackLabel;
+      const resetTxt = usage && usage.resetsAt ? formatResetIn(usage.resetsAt) : '';
+      const pct = usage && typeof usage.pct === 'number' ? Math.round(usage.pct) : null;
+      const cls = pct == null ? 'dim' : pctCls(pct);
+      const resetTitle = resetTxt ? `距离 ${label} 配额刷新还有 ${resetTxt}` : `${label} 重置时间未知`;
+      return `<span class="qt-win"><i>${escapeHtml(label)}</i><b class="${cls}">${pct == null ? '—' : `${pct}%`}</b><em title="${escapeHtml(resetTitle)}">↻${escapeHtml(resetTxt || '—')}</em></span>`;
     };
-  
-    const logoSrc = (badgeClass) => {
-      if (badgeClass === 'cl') return 'assets/ai-logos/claude.svg';
-      if (badgeClass === 'cx') return 'assets/ai-logos/codex.svg';
-      return '';
-    };
-    const renderUsageRow = (badgeClass, name, u5h, u7d, meta = {}) => {
-      const src = logoSrc(badgeClass);
-      const logoHtml = src
-        ? `<img class="acc-ai-logo" src="${src}" alt="${escapeHtml(name)}" title="${escapeHtml(name)}">`
-        : `<span class="acc-ai-letters">${badgeClass.toUpperCase()}</span>`;
-      const accountLabel = meta.accountEmail || meta.profileLabel || '';
+
+    const renderSeg = (name, u5h, u7d, meta = {}) => {
       const title = meta.profileLabel ? `${name} · ${meta.profileLabel}` : name;
       const age = formatAge(meta.lastSeen || 0);
       const source = meta.source ? ` · ${meta.source}` : '';
-      const staleCls = usageFreshnessClass(meta.lastSeen || 0);
-      const stateText = meta.unavailable ? '无数据' : age;
-      const recentResult = usageRefreshState.providerResults
-        && usageRefreshState.lastManualAt
-        && nowFn() - usageRefreshState.lastManualAt <= 60_000
-        ? usageRefreshState.providerResults[meta.providerKey]
-        : null;
-      let resultLabel = '';
-      let resultClass = '';
-      if (recentResult) {
-        if (!recentResult.ok) { resultLabel = '失败'; resultClass = 'error'; }
-        else if (recentResult.mode === 'live') { resultLabel = '实时'; resultClass = 'live'; }
-        else if (recentResult.mode === 'fallback') { resultLabel = '回退'; resultClass = 'fallback'; }
-        else if (recentResult.changed === false) { resultLabel = '无新快照'; resultClass = 'unchanged'; }
-        else { resultLabel = '已更新'; resultClass = 'updated'; }
-      }
-      const resultTitle = recentResult
-        ? `${resultLabel}${recentResult.source ? ` · ${recentResult.source}` : ''}${recentResult.error ? ` · ${recentResult.error}` : ''}`
-        : '';
-      const resultHtml = resultLabel
-        ? `<span class="acc-refresh-status ${resultClass}" title="${escapeHtml(resultTitle)}">${escapeHtml(resultLabel)}</span>`
-        : '';
-      const refreshTitle = usageRefreshState.error
-        ? `立即刷新用量 · 上次失败: ${usageRefreshState.error}`
-        : recentResult && recentResult.error
-          ? `立即刷新用量 · ${resultTitle}`
-          : `立即刷新用量 · ${stateText}${source}`;
-      const refreshHtml = meta.refreshable
-        ? `<button class="acc-refresh-btn${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="立即刷新用量">${usageRefreshState.inFlight ? '...' : '↻'}</button>`
-        : '';
-      // profileLabel 只在 Codex 行显示（Claude 没有 profile 概念）。
-      // 直接显示在 badge 旁边，让用户一眼看出当前监控的是哪个账号——
-      // 否则 UI 上没有区分线索，会和 codex /status 的另一个账号配额混淆。
-      const profileChip = accountLabel
-        ? `<span class="acc-ai-profile" title="${escapeHtml(accountLabel)}">${escapeHtml(accountLabel)}</span>`
-        : '';
-      const metaHtml = `<div class="acc-row-meta">${resultHtml}<span class="acc-row-age ${staleCls}" title="${escapeHtml(title)} · ${escapeHtml(stateText)}${escapeHtml(source)}">${escapeHtml(stateText)}</span>${refreshHtml}</div>`;
-      return `
-        <div class="acc-usage-row" title="${escapeHtml(title)} · ${escapeHtml(stateText)}${escapeHtml(source)}">
-          <span class="acc-ai-badge ${badgeClass}">${logoHtml}</span>
-          ${profileChip}
-          <div class="acc-bars">
-            ${renderBar('5h', u5h)}
-            ${renderBar('7d', u7d)}
-          </div>
-          ${metaHtml}
-        </div>
-      `;
+      const accountLabel = meta.accountEmail || '';
+      const tip = `${title} · 数据更新于 ${age}前${source}${accountLabel ? ` · ${accountLabel}` : ''}`;
+      return `<span class="qt-seg" title="${escapeHtml(tip)}"><span class="qt-name">${escapeHtml(name)}</span>${renderWindow('5h', u5h)}${renderWindow('7d', u7d)}</span>`;
     };
-  
+
     const c = agentUsage.codex || {};
+    const refreshTitle = usageRefreshState.error
+      ? `刷新账户用量 · 上次失败: ${usageRefreshState.error}`
+      : '刷新 Claude 与 Codex 账户用量';
+    // freshness 取两家最旧（保守）：任一数据过期则整灯变橙。
+    const lastSeens = [_claudeUsageLastSeen, agentUsageLastSeen.codex].filter(Boolean);
+    const oldest = lastSeens.length ? Math.min(...lastSeens) : 0;
+    const freshCls = usageFreshnessClass(oldest);
+    const ageTxt = lastSeens.length ? formatAge(oldest) : '未刷新';
     el.innerHTML =
-      renderUsageRow('cl', 'Claude', accountUsage.usage5h, accountUsage.usage7d, {
-        providerKey: 'claude',
+      `<span class="qt-cap">用量</span>` +
+      renderSeg('Claude', accountUsage.usage5h, accountUsage.usage7d, {
         lastSeen: _claudeUsageLastSeen,
-        refreshable: true,
         source: 'statusline',
       }) +
-      renderUsageRow('cx', 'Codex', c.usage5h, c.usage7d, {
-        providerKey: 'codex',
-        ...c,
-        lastSeen: agentUsageLastSeen.codex,
-        refreshable: true,
-      });
+      `<span class="qt-div"></span>` +
+      renderSeg('Codex', c.usage5h, c.usage7d, { ...c, lastSeen: agentUsageLastSeen.codex }) +
+      `<span class="qt-right"><span class="qt-fresh ${freshCls}" title="数据更新于 ${escapeHtml(ageTxt)}前（取两家最旧）"></span><span class="qt-age">${escapeHtml(ageTxt)}</span>` +
+      `<button class="qt-refresh${usageRefreshState.inFlight ? ' loading' : ''}" data-action="refresh-usage" title="${escapeHtml(refreshTitle)}" aria-label="刷新账户用量">${usageRefreshState.inFlight ? '刷新中' : '⟳ 刷新'}</button></span>`;
   
     el.querySelectorAll('[data-action="refresh-usage"]').forEach(refreshBtn => {
       refreshBtn.addEventListener('click', (event) => {

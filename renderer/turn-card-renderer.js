@@ -148,6 +148,7 @@ function aiLetterFallback(kind) {
 function _modelCtxWindow(model) {
   if (!model) return 200000;
   const m = String(model).toLowerCase();
+  if (m.includes('k3') || m.includes('kimi')) return 1048576;
   if (m.includes('1m') || m.includes('opus-4')) return 1000000;
   if (m.includes('gemini')) return 1000000;
   if (m.includes('sonnet')) return 200000;
@@ -178,9 +179,10 @@ function _renderMetaPills(turn) {
   if (turn.usage && (turn.usage.input_tokens || turn.usage.output_tokens)) {
     pills.push(`<span class="pill pill-token">⇡${_fmtTokens(turn.usage.input_tokens||0)} ⇣${_fmtTokens(turn.usage.output_tokens||0)}</span>`);
   }
-  if (turn.usage && turn.usage.input_tokens) {
-    const win = _modelCtxWindow(turn.model);
-    const pct = Math.min(100, Math.round(turn.usage.input_tokens / win * 100));
+  if (turn.usage && (turn.usage.context_tokens || turn.usage.input_tokens)) {
+    const contextTokens = turn.usage.context_tokens || turn.usage.input_tokens;
+    const win = turn.usage.context_window || _modelCtxWindow(turn.model);
+    const pct = Math.min(100, Math.round(contextTokens / win * 100));
     pills.push(`<span class="pill pill-ctx">📊 ${pct}% ctx</span>`);
   }
   if (typeof turn.tsEnd === 'number' && typeof turn.ts === 'number' && turn.tsEnd > turn.ts) {

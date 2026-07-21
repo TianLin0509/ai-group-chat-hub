@@ -201,130 +201,7 @@
   cursor: not-allowed; opacity: 0.5;
 }
 
-/* Phase 4 v2: 模式 dropdown — hover 展开一级 popup, 总结 hover 二级向上展开 */
-.mr-input-mode-chips {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  align-self: center;
-}
-.mr-mode-dropdown {
-  position: relative;
-}
-.mr-mode-trigger {
-  padding: 7px 14px;
-  border: 1px solid rgba(245,215,110,0.3);
-  border-radius: 18px;
-  background: rgba(245,215,110,0.10);
-  color: #f5d76e;
-  font-size: 12px;
-  cursor: pointer;
-  display: inline-flex; gap: 4px; align-items: center;
-  white-space: nowrap;
-  transition: all .15s;
-}
-.mr-mode-trigger:hover {
-  background: rgba(245,215,110,0.18);
-  border-color: #f5d76e;
-}
-.mr-mode-arrow { font-size: 9px; }
-
-/* 一级 popup: hover 主按钮 → 显示, 向上展开 */
-.mr-mode-popup {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  background: var(--bg-secondary, #161b22);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 8px;
-  padding: 4px;
-  min-width: 220px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-  display: none;
-  z-index: 10;
-}
-.mr-mode-dropdown:hover .mr-mode-popup,
-.mr-mode-popup:hover { display: block; }
-/* hover 缓冲区(防止鼠标穿越间距时关闭) */
-.mr-mode-dropdown::after {
-  content: '';
-  position: absolute;
-  bottom: 100%; left: 0; right: 0;
-  height: 8px;
-  display: none;
-}
-.mr-mode-dropdown:hover::after { display: block; }
-
-.mr-mode-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; border-radius: 5px;
-  font-size: 13px; color: var(--text-primary, #c9d1d9);
-  cursor: pointer;
-  background: transparent; border: none;
-  width: 100%; text-align: left;
-}
-.mr-mode-item:hover:not([disabled]):not(.disabled) {
-  background: rgba(88,166,255,0.12);
-}
-.mr-mode-item[disabled],
-.mr-mode-item.disabled {
-  opacity: 0.4; cursor: not-allowed;
-}
-.mr-mode-item-hint {
-  font-size: 10.5px; color: var(--text-muted, #6e7681);
-}
-.mr-mode-item-summary {
-  position: relative;
-  background: rgba(245,215,110,0.04);
-}
-.mr-mode-item-summary:hover:not(.disabled) {
-  background: rgba(245,215,110,0.12);
-}
-.mr-mode-item-summary:hover:not(.disabled) .mr-mode-item-hint {
-  color: #f5d76e;
-}
-
-/* 二级 popup: hover 总结项 → 向右展开 + 向上对齐(避免溢出窗口底部) */
-.mr-mode-subpopup {
-  position: absolute;
-  left: calc(100% + 4px);
-  bottom: 0; /* 底部对齐总结项底部, 内容向上延伸 — 避免靠近窗口底时溢出 */
-  background: var(--bg-secondary, #161b22);
-  border: 1px solid var(--border, #30363d);
-  border-radius: 8px;
-  padding: 4px;
-  min-width: 200px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-  display: none;
-}
-.mr-mode-item-summary:hover:not(.disabled) .mr-mode-subpopup {
-  display: block;
-}
-.mr-mode-subpopup-title {
-  padding: 6px 12px; font-size: 11px; color: var(--text-muted, #6e7681);
-  border-bottom: 1px solid var(--border, #30363d);
-  margin-bottom: 4px;
-}
-.mr-mode-subpopup-empty {
-  padding: 8px 12px; font-size: 12px; color: var(--text-muted, #6e7681);
-}
-.mr-mode-subitem {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px; border-radius: 5px;
-  font-size: 12.5px; color: var(--text-primary, #c9d1d9);
-  cursor: pointer;
-  background: transparent; border: none;
-  width: 100%; text-align: left;
-}
-.mr-mode-subitem img {
-  width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
-}
-.mr-mode-subitem:hover:not([disabled]) {
-  background: rgba(245,215,110,0.12); color: #f5d76e;
-}
-.mr-mode-subitem[disabled] {
-  opacity: 0.4; cursor: not-allowed;
-}
+/* 2026-07-20 道雪 [修#10]：模式 dropdown 死样式已删（功能早移除，原 125 行） */
 
 /* Phase 4 v2: 欢迎 head 动态状态 — 启动中黄色 / 全员就绪绿色 */
 .mr-gc-ob-head {
@@ -375,6 +252,8 @@
   outline: none;
   overflow-y: auto;
   word-break: break-word;
+  /* 2026-07-20 道雪 [修#7a]：JS 写入（草稿恢复/模板注入）后换行不再被折叠成空格 */
+  white-space: pre-wrap;
 }
 
 .mr-input-box:focus {
@@ -692,3 +571,11 @@
   border-radius: 3px;
 }
 
+
+/* 2026-07-20 道雪 [修#3a]：休眠成员头像灰显（配合 JS 的 disabled 禁勾） */
+.mr-free-avatar-chk.dormant img { opacity: 0.45; filter: grayscale(0.8); }
+.mr-free-avatar-chk.dormant { cursor: not-allowed; }
+
+/* 2026-07-20 道雪 [修#8]：可点击 chip（循环状态停止钮） */
+.mr-input-preflight-chip.clickable { cursor: pointer; }
+.mr-input-preflight-chip.clickable:hover { border-color: rgba(245, 215, 110, 0.6); background: rgba(245, 215, 110, 0.16); }

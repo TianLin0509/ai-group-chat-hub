@@ -381,6 +381,8 @@ const sessionListRenderer = createSessionListRenderer({
   selectSession: (id, opts) => selectSession(id, opts),
   selectMeeting: (id) => selectMeeting(id),
   openContextMenu: (id, x, y) => openContextMenu(id, x, y),
+  // 列表渲染完成后的回调：刷新浮动栏 ctx chip / 中断钮 + 「等你响应」浮动条
+  afterRender: () => { updateFloatingBarState(); updateRespondPill(); },
 });
 const renderSessionList = sessionListRenderer.renderSessionList;
 let activeMeetingId = null;
@@ -1846,6 +1848,60 @@ function mountFloatingInput(sessionId, termContainer, terminal) {
       saveFloatingInputDraft(sessionId, inputBox);
       if (bar.parentNode) bar.parentNode.removeChild(bar);
     },
+  };
+}
+
+// 刷新浮动输入栏的 ctx chip 与中断钮（跟随 active session 状态）。
+//   调用时机：mountFloatingInput 后 + 每次 renderSessionList（status 事件驱动）。
+function updateFloatingBarState() {
+  const bar = document.querySelector('.terminal-panel .floating-input-bar');
+  if (!bar || !activeSessionId) return;
+  const s = sessions.get(activeSessionId);
+  if (!s) return;
+  const chip = bar.querySelector('.fi-ctx');
+  if (chip) {
+    if (typeof s.contextPct === 'number') {
+      chip.style.display = '';
+      chip.textContent = `ctx ${s.contextPct}%`;
+      chip.className = 'fi-ctx ' + pctClass(s.contextPct);
+      chip.title = `当前会话上下文占用 ${s.contextPct}%`;
+    } else {
+      chip.style.display = 'none';
+    }
+  }
+  const stop = bar.querySelector('.floating-input-stop');
+  if (stop) stop.classList.toggle('visible', s.status === 'running');
+}
+
+// 「等你响应」浮动条——统计口径与侧栏分区完全一致
+//   （普通：isWaiting 或 unreadCount>0；群聊：本轮已答 AI 数>0；均排除 active 与 dormant）。
+function updateRespondPill() {
+  const pill = document.getElementById('respond-pill');
+  if (!pill) return;
+  const items = [];
+  for (const s of sessions.values()) {
+    if (s.meetingId || s.id === activeSessionId || s.status === 'dormant') continue;
+    if (s.isWaiting) items.push({ id: s.id, meeting: false, wait: true, t: s.lastMessageTime || 0 });
+    else if ((s.unreadCount || 0) > 0) items.push({ id: s.id, meeting: false, wait: false, t: s.lastMessageTime || 0 });
+  }
+  for (const m of Object.values(meetings || {})) {
+    if (m.id === activeMeetingId || m.status === 'dormant') continue;
+    const n = m.unreadAnswered instanceof Set ? m.unreadAnswered.size : 0;
+    if (n > 0) items.push({ id: m.id, meeting: true, wait: false, t: m.lastMessageTime || 0 });
+  }
+  if (!items.length) { pill.style.display = 'none'; return; }
+  const waitN = items.filter(i => i.wait).length;
+  const unreadN = items.length - waitN;
+  let txt = `⏸ <b>${items.length}</b> 个会话等你响应`;
+  if (waitN && unreadN) txt += `（<span class="rp-unread">${unreadN} 未读</span>）`;
+  txt += ' · 点击跳转 →';
+  pill.innerHTML = txt;
+  pill.style.display = 'flex';
+  pill.onclick = () => {
+    items.sort((a, b) => b.t - a.t);
+    const top = items[0];
+    if (top.meeting) selectMeeting(top.id);
+    else selectSession(top.id, { forceScrollBottom: true });
   };
 }
 

@@ -20,6 +20,11 @@
 </head>
 <body>
   <div class="app-container" id="app-container">
+    <!-- 全局配额 ticker：常驻顶部（原侧栏 account-usage 面板迁移至此） -->
+    <div id="quota-ticker" class="quota-ticker" style="display:none"></div>
+    <div class="app-body" id="app-body">
+    <!-- 「等你响应」浮动条：主区右下角，任意视图可见 -->
+    <div class="respond-pill" id="respond-pill" style="display:none"></div>
     <div class="session-sidebar" id="session-sidebar">
       <div class="sidebar-header">
         <div class="new-session-wrapper" id="new-session-wrapper">
@@ -55,6 +60,8 @@
       </div>
       <div id="account-usage" class="account-usage" style="display:none"></div>
       <div class="session-list" id="session-list"></div>
+      <!-- 侧栏底部全局聚合条（会话数 / 等你数 / ctx 均值 / 最大 burn） -->
+      <div class="sidebar-strip" id="sidebar-strip" style="display:none"></div>
       <div class="context-menu" id="context-menu" style="display:none">
         <button class="context-menu-item" data-action="pin">Pin to top</button>
         <button class="context-menu-item" data-action="restart">Restart session</button>
@@ -192,6 +199,7 @@
       <button class="terminal-search-btn" id="terminal-search-prev" title="Previous (Shift+Enter)">↑</button>
       <button class="terminal-search-btn" id="terminal-search-next" title="Next (Enter)">↓</button>
       <button class="terminal-search-btn" id="terminal-search-close" title="Close (Esc)">✕</button>
+    </div>
     </div>
   </div>
   <script src="path-link.js"></script>
