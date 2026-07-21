@@ -1613,13 +1613,10 @@ if (typeof document !== 'undefined') (function () {
     if (!turns.length || currentMode !== 'idle' || isHistory) return '';
     const last = turns[turns.length - 1] || {};
     const label = last.mode === 'debate' ? '辩论' : (last.mode === 'summary' ? '综合' : '提问');
+    // 与上游对齐：摘除五个低频操作按钮（综合共识/互相挑错/生成交接/引用焦点卡/
+    //   复制本轮），只保留轮次结束提示。点击委托与 _handleNextAction 保留备用。
     return `<section class="mr-next-actions" aria-label="下一步动作">
       <span class="mr-next-actions-label">第 ${escapeHtml(last.n || turns.length)} 轮 ${escapeHtml(label)} 已结束</span>
-      <button type="button" data-gc-next-action="synthesize">综合共识</button>
-      <button type="button" data-gc-next-action="challenge">互相挑错</button>
-      <button type="button" data-gc-next-action="handoff">生成交接</button>
-      <button type="button" data-gc-next-action="quote-latest">引用焦点卡</button>
-      <button type="button" data-gc-next-action="copy-round">📋 复制本轮</button>
     </section>`;
   }
 
