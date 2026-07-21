@@ -148,7 +148,7 @@ function aiLetterFallback(kind) {
 function _modelCtxWindow(model) {
   if (!model) return 200000;
   const m = String(model).toLowerCase();
-  if (m.includes('k3') || m.includes('kimi')) return 1048576;
+  if (m.includes('k3')) return 1048576;
   if (m.includes('1m') || m.includes('opus-4')) return 1000000;
   if (m.includes('gemini')) return 1000000;
   if (m.includes('sonnet')) return 200000;

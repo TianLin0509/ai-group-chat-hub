@@ -285,7 +285,6 @@ function createKeyboardShortcuts({
       { label: '新建 Claude 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'claude') },
       { label: '新建 Gemini 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'gemini') },
       { label: '新建 Codex 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'codex') },
-      { label: '新建 Kimi Code 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'kimi') },
       { label: '新建 DeepSeek 会话', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'deepseek') },
       { label: '新建 PowerShell 终端', sub: 'new', run: () => ipcRenderer.invoke('create-session', 'powershell') },
       { label: '切换侧栏', sub: 'cmd', run: () => toggleSidebar() },
